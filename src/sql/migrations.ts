@@ -166,6 +166,19 @@ export const MIGRATIONS: ReadonlyArray<{ name: string; statement: string }> = [
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`,
   },
+  // v012–v014: idempotent (IF NOT EXISTS), so a partially applied run can be repeated safely.
+  {
+    name: 'v012_unique_dependency_edge_contract',
+    statement: 'CREATE UNIQUE INDEX IF NOT EXISTS uq_edges_contract ON dependency_edges (contract_id)',
+  },
+  {
+    name: 'v013_index_requests_source_issue',
+    statement: 'CREATE INDEX IF NOT EXISTS idx_requests_source_issue ON requests (source_issue_key)',
+  },
+  {
+    name: 'v014_index_contracts_deliverable_issue',
+    statement: 'CREATE INDEX IF NOT EXISTS idx_contracts_deliverable_issue ON contracts (deliverable_issue_key)',
+  },
 ];
 
 /** Applies pending migrations; safe to call on every cold start. */

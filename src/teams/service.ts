@@ -1,5 +1,7 @@
 import { route } from '@forge/api';
 import { jira, type Principal } from '../atlassian/http';
+import { UserFacingError } from '../errors';
+import { myPermissions } from '../jira/permissions';
 import { findScrumBoard } from '../jira/boards';
 import { listSprints, toPlannerSprint } from '../jira/sprints';
 import { listSprintIssues, searchIssues } from '../jira/issues';
@@ -46,7 +48,7 @@ import {
 export const CHARTER_SPACE_KEY = 'ACCORD';
 const CHARTER_SPACE_NAME = 'Accord team charters';
 
-export class TeamSetupError extends Error {
+export class TeamSetupError extends UserFacingError {
   constructor(message: string) {
     super(message);
     this.name = 'TeamSetupError';
@@ -62,6 +64,22 @@ interface JiraProject {
 
 export async function getProject(projectKey: string): Promise<JiraProject> {
   return jira<JiraProject>(route`/rest/api/3/project/${projectKey}`);
+}
+
+/**
+ * Team administration (register, charter page, charter sync) is limited to the Jira
+ * project lead or users with ADMINISTER_PROJECTS on that project (checked as the user).
+ * Returns the project so callers can reuse its lead.
+ */
+export async function requireProjectAdmin(projectKey: string, accountId: string | undefined): Promise<JiraProject> {
+  if (!accountId) throw new UserFacingError('A signed-in Jira user is required.');
+  const project = await getProject(projectKey);
+  if (project.lead?.accountId === accountId) return project;
+  const granted = await myPermissions({ projectKey: project.key }, ['ADMINISTER_PROJECTS']);
+  if (!granted.has('ADMINISTER_PROJECTS')) {
+    throw new UserFacingError(`Only the project lead or a project administrator of ${project.key} can change its Accord team setup.`);
+  }
+  return project;
 }
 
 /** Registers (or refreshes) a Jira project as an Accord team. Requires a Scrum board. */
@@ -102,9 +120,8 @@ export async function ensureCharterSpace(as: Principal = 'app'): Promise<Space> 
   } catch (error) {
     const fallback = (await listSpaces()).find((space) => space.type === 'global' && space.status !== 'archived');
     if (fallback) return fallback;
-    throw new TeamSetupError(
-      `Could not create the Confluence space ${CHARTER_SPACE_KEY} and no global space exists: ${String(error)}`,
-    );
+    console.error(`Creating Confluence space ${CHARTER_SPACE_KEY} failed`, error instanceof Error ? error.message : error);
+    throw new TeamSetupError(`Could not create the Confluence space ${CHARTER_SPACE_KEY} and no global space exists.`);
   }
 }
 

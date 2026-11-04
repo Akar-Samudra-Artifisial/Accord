@@ -61,6 +61,16 @@ export async function getTeamByKey(teamKey: string): Promise<Team | null> {
   return rows[0] ? toTeam(rows[0]) : null;
 }
 
+export async function getTeamById(id: string): Promise<Team | null> {
+  const rows = await select<TeamRow>('SELECT * FROM teams WHERE id = ?', [id]);
+  return rows[0] ? toTeam(rows[0]) : null;
+}
+
+export async function getTeamByProjectKey(projectKey: string): Promise<Team | null> {
+  const rows = await select<TeamRow>('SELECT * FROM teams WHERE jira_project_key = ?', [projectKey]);
+  return rows[0] ? toTeam(rows[0]) : null;
+}
+
 export async function getTeamByCharterPage(pageId: string): Promise<Team | null> {
   const rows = await select<TeamRow>('SELECT * FROM teams WHERE charter_page_id = ?', [pageId]);
   return rows[0] ? toTeam(rows[0]) : null;

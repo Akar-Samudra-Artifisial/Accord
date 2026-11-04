@@ -1,4 +1,5 @@
 import Resolver from '@forge/resolver';
+import { clientError, UserFacingError } from '../errors';
 import { planOptions } from '../planner';
 import { demoPlannerInput } from '../demo/scenario';
 import { executeSeedStep, getSeedStatus } from '../demo/seed';
@@ -11,20 +12,31 @@ import {
   defaultCharterTemplate,
   refreshJiraThroughput,
   registerTeam,
+  requireProjectAdmin,
   syncCharter,
   teamCapacity,
 } from '../teams/service';
+import {
+  contracts,
+  createRequestFromIssue,
+  dealSheet,
+  decideOnDealSheet,
+  inbox,
+  panelState,
+  retryStalledRequest,
+  type ResolverContext,
+} from './negotiation';
 
 type Result<T> = ({ ok: true } & T) | { ok: false; error: string };
 
-interface RequestContext {
-  accountId?: string;
+interface RequestContext extends ResolverContext {
   siteUrl?: string;
-  extension?: { content?: { id?: string | number } };
+  extension?: ResolverContext['extension'] & { content?: { id?: string | number } };
 }
 
-function failure(error: unknown): { ok: false; error: string } {
-  return { ok: false, error: error instanceof Error ? error.message : String(error) };
+/** Only user-facing messages reach the client; everything else is logged with a reference id. */
+function failure(operation: string, error: unknown): { ok: false; error: string } {
+  return { ok: false, error: clientError(operation, error) };
 }
 
 const PROJECT_KEY = /^[A-Z][A-Z0-9_]{1,9}$/;
@@ -54,17 +66,71 @@ async function teamView(team: Team, siteUrl?: string) {
 export type TeamView = Awaited<ReturnType<typeof teamView>>;
 
 async function requireTeam(teamKey: unknown): Promise<Team> {
-  if (typeof teamKey !== 'string' || !PROJECT_KEY.test(teamKey)) throw new Error('A valid team key is required.');
+  if (typeof teamKey !== 'string' || !PROJECT_KEY.test(teamKey)) throw new UserFacingError('A valid team key is required.');
   const team = await getTeamByKey(teamKey);
-  if (!team) throw new Error(`Team ${teamKey} is not registered in Accord.`);
+  if (!team) throw new UserFacingError(`Team ${teamKey} is not registered in Accord.`);
   return team;
 }
 
 const resolver = new Resolver();
 
-resolver.define('getPanelState', () => {
-  // TODO(M3): look up the request linked to the current issue.
-  return { status: 'none' };
+resolver.define('getPanelState', async ({ context }: { context: RequestContext }) => {
+  try {
+    return { ok: true, ...(await panelState(context)) };
+  } catch (error) {
+    return failure('getPanelState', error);
+  }
+});
+
+resolver.define(
+  'createRequest',
+  async ({ payload, context }: { payload: Record<string, unknown>; context: RequestContext }) => {
+    try {
+      return { ok: true, ...(await createRequestFromIssue(payload, context.accountId)) };
+    } catch (error) {
+      return failure('createRequest', error);
+    }
+  },
+);
+
+resolver.define('getDealSheet', async ({ payload, context }: { payload: Record<string, unknown>; context: RequestContext }) => {
+  try {
+    return { ok: true, sheet: await dealSheet(payload, context.accountId) };
+  } catch (error) {
+    return failure('getDealSheet', error);
+  }
+});
+
+resolver.define('decide', async ({ payload, context }: { payload: Record<string, unknown>; context: RequestContext }) => {
+  try {
+    return { ok: true, result: await decideOnDealSheet(payload, context.accountId) };
+  } catch (error) {
+    return failure('decide', error);
+  }
+});
+
+resolver.define('retryRequest', async ({ payload, context }: { payload: Record<string, unknown>; context: RequestContext }) => {
+  try {
+    return { ok: true, result: await retryStalledRequest(payload, context.accountId) };
+  } catch (error) {
+    return failure('retryRequest', error);
+  }
+});
+
+resolver.define('getInbox', async ({ context }: { context: RequestContext }) => {
+  try {
+    return { ok: true, items: await inbox(context.accountId) };
+  } catch (error) {
+    return failure('getInbox', error);
+  }
+});
+
+resolver.define('getContracts', async ({ context }: { context: RequestContext }) => {
+  try {
+    return { ok: true, contracts: await contracts(context.accountId) };
+  } catch (error) {
+    return failure('getContracts', error);
+  }
 });
 
 resolver.define('getDemoOptions', () => planOptions(demoPlannerInput()));
@@ -75,7 +141,7 @@ resolver.define('getTeams', async ({ context }: { context: RequestContext }): Pr
     for (const team of await listTeams()) teams.push(await teamView(team, context.siteUrl));
     return { ok: true, teams };
   } catch (error) {
-    return failure(error);
+    return failure('getTeams', error);
   }
 });
 
@@ -85,11 +151,12 @@ resolver.define(
     try {
       const projectKey = typeof payload.projectKey === 'string' ? payload.projectKey.trim().toUpperCase() : '';
       if (!PROJECT_KEY.test(projectKey)) return { ok: false, error: 'Enter a Jira project key, for example PAY.' };
+      await requireProjectAdmin(projectKey, context.accountId);
       const team = await registerTeam(projectKey);
       await refreshJiraThroughput(team);
       return { ok: true, team: await teamView(team, context.siteUrl) };
     } catch (error) {
-      return failure(error);
+      return failure('registerTeam', error);
     }
   },
 );
@@ -99,11 +166,14 @@ resolver.define(
   async ({ payload, context }: { payload: { teamKey?: unknown }; context: RequestContext }): Promise<Result<{ team: TeamView }>> => {
     try {
       const team = await requireTeam(payload.teamKey);
-      await createCharterPage(team, defaultCharterTemplate(team, context.accountId ?? team.leadAccountId), 'user');
+      const project = await requireProjectAdmin(team.jiraProjectKey, context.accountId);
+      // Default approver is the Jira project lead, never the caller (approvers come from the charter or the lead).
+      const lead = project.lead?.accountId ?? team.leadAccountId;
+      await createCharterPage(team, defaultCharterTemplate(team, lead), 'user');
       const updated = (await getTeamByKey(team.teamKey)) ?? team;
       return { ok: true, team: await teamView(updated, context.siteUrl) };
     } catch (error) {
-      return failure(error);
+      return failure('createCharterPage', error);
     }
   },
 );
@@ -113,10 +183,11 @@ resolver.define(
   async ({ payload, context }: { payload: { teamKey?: unknown }; context: RequestContext }): Promise<Result<{ team: TeamView }>> => {
     try {
       const team = await requireTeam(payload.teamKey);
+      await requireProjectAdmin(team.jiraProjectKey, context.accountId);
       await syncCharter(team);
       return { ok: true, team: await teamView(team, context.siteUrl) };
     } catch (error) {
-      return failure(error);
+      return failure('syncCharter', error);
     }
   },
 );
@@ -125,7 +196,7 @@ resolver.define('getSeedStatus', async () => {
   try {
     return { ok: true, steps: await getSeedStatus() };
   } catch (error) {
-    return failure(error);
+    return failure('getSeedStatus', error);
   }
 });
 
@@ -147,7 +218,7 @@ resolver.define(
       });
       return { ok: true, success, steps: await getSeedStatus() };
     } catch (error) {
-      return failure(error);
+      return failure('runSeedStep', error);
     }
   },
 );
@@ -161,8 +232,7 @@ resolver.define('getBylineState', async ({ context }: { context: RequestContext 
     const page = await getPage(String(pageId));
     return { ok: true, ...charterBylineState(page.title, page.body?.storage?.value ?? '') };
   } catch (error) {
-    console.error('getBylineState failed', error instanceof Error ? error.stack ?? error.message : error);
-    return failure(error);
+    return failure('getBylineState', error);
   }
 });
 

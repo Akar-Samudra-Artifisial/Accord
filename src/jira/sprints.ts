@@ -76,3 +76,9 @@ export function toPlannerSprint(sprint: JiraSprint): Sprint | null {
     state: sprint.state,
   };
 }
+
+export async function moveIssuesToBacklog(issueKeys: readonly string[]): Promise<void> {
+  for (let i = 0; i < issueKeys.length; i += 50) {
+    await jira<void>(route`/rest/agile/1.0/backlog/issue`, { method: 'POST', body: { issues: issueKeys.slice(i, i + 50) } });
+  }
+}

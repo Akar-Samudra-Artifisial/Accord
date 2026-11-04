@@ -1,5 +1,6 @@
 /**
- * Development-only diagnostics web trigger (`accord-dev-diag`).
+ * Development-only diagnostics web trigger (`accord-dev-diag`). Disabled unless the Forge
+ * variable ACCORD_DIAG_ENABLED is `true` (set only in the development environment).
  * TODO(before production): remove this module, its manifest entry and the
  * `dev-diag` function. Never commit the web trigger URL.
  */
@@ -11,7 +12,13 @@ import { ensureSchema, select } from '../sql/db';
 import { createPage, findPageByTitle, getPage, getPageLabels } from '../confluence/pages';
 import { charterBylineState } from '../confluence/charter';
 import { ensureCharterSpace, loadCommitments, teamCapacity } from '../teams/service';
-import { getCharter, listTeams } from '../teams/repository';
+import { getCharter, getTeamByKey, getTeamByProjectKey, listTeams } from '../teams/repository';
+import { randomUUID } from 'node:crypto';
+import { productionDeps } from '../negotiation/deps';
+import { createRequest } from '../negotiation/orchestrator';
+import { requestsByStatus } from '../negotiation/store';
+import { deleteIssueLink, isBlocksFrom, ISSUE_KEY, linkBlocks, listIssueLinks, type IssueLink } from '../jira/issues';
+import type { CostClass, Size } from '../planner';
 import { executeSeedStep, getSeedStatus, SEED_QUEUE_KEY, startSeed } from '../demo/seed';
 import { SEED_STEPS, type SeedStep } from '../demo/seed-data';
 
@@ -78,7 +85,7 @@ async function spikes() {
 }
 
 async function status() {
-  const tables = ['teams', 'charters', 'throughput_samples', 'requests', 'audit_log', 'demo_seed_steps'];
+  const tables = ['teams', 'charters', 'throughput_samples', 'requests', 'contracts', 'audit_log', 'demo_seed_steps'];
   const counts: Record<string, number> = {};
   for (const table of tables) {
     const [row] = await select<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`);
@@ -113,7 +120,100 @@ async function status() {
   return { counts, teams, seed: await getSeedStatus(), lastQueuePing: ping ?? null };
 }
 
+const param = (query: Record<string, string[]>, name: string, fallback: string): string => query[name]?.[0] ?? fallback;
+
+/**
+ * Creates a dependency request through the same service as the issue panel. The app is the
+ * creator (`diag-webtrigger`); approvals still need the real leads in the browser.
+ */
+async function diagCreateRequest(query: Record<string, string[]>) {
+  const sourceIssueKey = param(query, 'issue', '').toUpperCase();
+  const requesterTeam = await getTeamByProjectKey(sourceIssueKey.slice(0, sourceIssueKey.lastIndexOf('-')));
+  const providerTeam = await getTeamByKey(param(query, 'provider', 'PAY').toUpperCase());
+  if (!requesterTeam || !providerTeam) throw new Error('Unknown requester project or provider team');
+  const min = query.min?.[0];
+  const request = await createRequest(
+    productionDeps,
+    {
+      sourceIssueKey,
+      requesterTeam,
+      providerTeam,
+      title: param(query, 'title', 'Diag dependency request'),
+      size: param(query, 'size', 'M').toUpperCase() as Size,
+      minSize: min ? Number(min) : null,
+      neededBy: param(query, 'neededBy', ''),
+      costClass: param(query, 'cost', 'standard') as CostClass,
+      createdBy: 'diag-webtrigger',
+    },
+    `req-${randomUUID()}`,
+  );
+  return { requestId: request.id, status: request.status, createdAt: request.createdAt };
+}
+
+async function diagRequest(id: string) {
+  const { store } = productionDeps;
+  const request = await store.getRequest(id);
+  if (!request) throw new Error(`Request ${id} not found`);
+  const rounds = await store.listRounds(id);
+  const options = await store.listOptions(id);
+  return {
+    request,
+    rounds: rounds.map((r) => ({ round: r.roundNo, role: r.role, status: r.status, error: r.error, createdAt: r.createdAt })),
+    options: options.map((o) => ({
+      id: o.id,
+      kind: o.kind,
+      dateRange: o.dateRange,
+      shifted: o.shifted.length,
+      meetsNeed: o.meetsNeed,
+      recommended: o.recommended,
+    })),
+    approvals: await store.listApprovals(id),
+    contract: await store.getContract(id),
+  };
+}
+
+/**
+ * Creates "blocker blocks blocked" with the production `linkBlocks`, reads the link back from both
+ * issues (as Jira's UI labels it) and deletes it again unless `keep=1`.
+ */
+async function verifyBlocksLink(query: Record<string, string[]>) {
+  const blocker = param(query, 'blocker', '').toUpperCase();
+  const blocked = param(query, 'blocked', '').toUpperCase();
+  if (!ISSUE_KEY.test(blocker) || !ISSUE_KEY.test(blocked)) throw new Error('Need ?blocker=KEY&blocked=KEY');
+  const describe = (key: string, links: IssueLink[]) =>
+    links
+      .filter((link) => link.type.name === 'Blocks')
+      .map((link) => ({
+        id: link.id,
+        reads: link.outwardIssue
+          ? `${key} ${link.type.outward} ${link.outwardIssue.key}`
+          : `${key} ${link.type.inward} ${link.inwardIssue?.key}`,
+      }));
+  const existed = (await listIssueLinks(blocker)).some((link) => isBlocksFrom(link, blocked));
+  if (!existed) await linkBlocks(blocker, blocked);
+  const fromBlocker = await listIssueLinks(blocker);
+  const fromBlocked = await listIssueLinks(blocked);
+  const created = fromBlocker.find((link) => link.type.name === 'Blocks' && (link.outwardIssue?.key === blocked || link.inwardIssue?.key === blocked));
+  const result = {
+    expected: `${blocker} blocks ${blocked}`,
+    hasBlocksLink: fromBlocker.some((link) => isBlocksFrom(link, blocked)),
+    blocker: describe(blocker, fromBlocker),
+    blocked: describe(blocked, fromBlocked),
+    existedBefore: existed,
+    deleted: false,
+  };
+  if (!existed && created?.id && query.keep?.[0] !== '1') {
+    await deleteIssueLink(created.id);
+    result.deleted = true;
+  }
+  return result;
+}
+
 export async function devDiagHandler(request: WebTriggerRequest): Promise<WebTriggerResponse> {
+  // The web trigger URL is public: everything is refused unless the development-only variable is set.
+  if (process.env.ACCORD_DIAG_ENABLED !== 'true') {
+    return { statusCode: 404, headers: { 'Content-Type': ['application/json'] }, body: JSON.stringify({ error: 'Not found' }) };
+  }
   const action = request.queryParameters?.action?.[0] ?? 'status';
   let body: unknown;
   try {
@@ -137,6 +237,13 @@ export async function devDiagHandler(request: WebTriggerRequest): Promise<WebTri
       if (!pageId) throw new Error('Missing ?page=<id>');
       const page = await getPage(pageId);
       body = charterBylineState(page.title, page.body?.storage?.value ?? '');
+    } else if (action === 'create-request') {
+      body = await diagCreateRequest(request.queryParameters ?? {});
+    } else if (action === 'verify-blocks-link') {
+      body = await verifyBlocksLink(request.queryParameters ?? {});
+    } else if (action === 'request') {
+      const id = request.queryParameters?.id?.[0];
+      body = id ? await diagRequest(id) : await requestsByStatus(['negotiating', 'awaiting-approval', 'approved', 'contracted', 'rejected', 'failed'], 10);
     } else body = await status();
   } catch (error) {
     body = { error: error instanceof Error ? error.message : String(error) };
