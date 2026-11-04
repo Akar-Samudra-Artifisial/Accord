@@ -1,0 +1,32 @@
+{
+  "name": "accord",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Accord — negotiated cross-team dependency contracts for Jira, built on Atlassian Forge (Codegeist 2026).",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "forge lint"
+  },
+  "dependencies": {
+    "@forge/api": "^8.4.0",
+    "@forge/bridge": "^7.2.1",
+    "@forge/events": "^3.0.9",
+    "@forge/react": "^12.4.0",
+    "@forge/resolver": "^2.0.2",
+    "@forge/sql": "^4.0.9",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/react": "^18.3.31",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  }
+}

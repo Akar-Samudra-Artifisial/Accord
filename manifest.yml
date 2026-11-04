@@ -1,0 +1,271 @@
+modules:
+  jira:issuePanel:
+    - key: accord-issue-panel
+      resource: panel
+      resolver:
+        function: resolver
+      render: native
+      title: Accord
+      icon: https://developer.atlassian.com/platform/forge/images/icons/issue-panel-icon.svg
+  jira:globalPage:
+    - key: accord-home
+      resource: home
+      resolver:
+        function: resolver
+      render: native
+      title: Accord
+  confluence:contentBylineItem:
+    - key: accord-charter-byline
+      resource: byline
+      resolver:
+        function: resolver
+      render: native
+      title: Accord charter
+      tooltip: Check whether this page is a valid Accord team charter
+  consumer:
+    - key: accord-negotiation-consumer
+      queue: accord-negotiation
+      # @forge/events v2+: consumers reference a function directly (the v1 `resolver` form makes push return 400).
+      function: negotiation-consumer
+    - key: accord-demo-seed-consumer
+      queue: accord-demo-seed
+      function: demo-seed-consumer
+  # TODO(before production): remove accord-dev-diag and the dev-diag function (development diagnostics only).
+  webtrigger:
+    - key: accord-dev-diag
+      function: dev-diag
+      response:
+        type: dynamic
+  scheduledTrigger:
+    - key: accord-daily-monitor
+      function: daily-monitor
+      interval: day
+  sql:
+    - key: main
+      engine: mysql
+  rovo:agent:
+    - key: accord-team-delegate
+      name: Accord Team Delegate
+      description: Represents one team in a dependency negotiation, using only the
+        team's charter and the numbers produced by the Accord planner.
+      prompt: >
+        You are the Accord Team Delegate. You represent exactly one team in a
+        cross-team dependency negotiation inside Jira.
+
+        Rules you must always follow: 1. Every number you mention (dates, sprint
+        counts, issue counts, capacity, shares) must come verbatim from an
+        Accord action result (get-team-charter, get-team-capacity, get-request,
+        evaluate-options, list-contracts). Never estimate, round, or compute
+        numbers yourself. 2. Use neutral language. Describe what an option does
+        ("This option moves Ledger cleanup one sprint"), never who must give in.
+        3. Respect the team charter: red-line work is never offered for
+        shifting, and requests above the maximum external share are declined
+        with the charter rule as the reason. 4. You never approve, accept, or
+        commit on behalf of the team. Only the named approvers can approve a
+        deal sheet in the Accord UI. If asked to approve, explain that a human
+        approver must do it. 5. You may ask the planner for at most one
+        variation per request (for example, the minimum part a few days earlier)
+        via evaluate-options. 6. If data is limited or an action fails, say so
+        plainly instead of guessing.
+      conversationStarters:
+        - What do we owe other teams this sprint?
+        - Show the options for this dependency request
+        - What does our charter allow us to shift?
+      actions:
+        - get-team-charter
+        - get-team-capacity
+        - get-request
+        - evaluate-options
+        - list-contracts
+        - create-dependency-request
+    - key: accord-broker
+      name: Accord Broker
+      description: Neutral broker that turns planner options into a deal sheet with
+        one recommendation and alternatives for both team leads.
+      prompt: >
+        You are the Accord Broker, a neutral party between a requesting team and
+        a providing team.
+
+        Rules you must always follow: 1. Only use numbers returned by Accord
+        actions (get-request, evaluate-options, get-team-charter,
+        get-team-capacity, list-contracts). Never calculate, estimate, or invent
+        dates or quantities. 2. Present the planner's recommended option first,
+        then the alternatives, and for each option state the consequence for the
+        requesting team and for the providing team, plus the charter rules used.
+        3. Use neutral language that describes work and dates, never blame or
+        pressure either team. 4. You never approve or reject anything on behalf
+        of any team. Both team leads decide in the Accord deal sheet. 5.
+        Negotiation is limited to two rounds; after that, hand the decision to
+        the humans and, if no option is acceptable, suggest escalation.
+      conversationStarters:
+        - Summarize the deal sheet for this request
+        - Which contracts are at risk?
+      actions:
+        - get-request
+        - evaluate-options
+        - get-team-charter
+        - get-team-capacity
+        - list-contracts
+  action:
+    - key: get-team-charter
+      name: Get team charter
+      function: act-team-charter
+      actionVerb: GET
+      description: Returns the parsed Accord charter of a team (priorities, red lines,
+        shiftable work, maximum external share, response time, approvers).
+      inputs:
+        teamKey:
+          title: Team key
+          type: string
+          required: true
+          description: Accord team key, for example PAY.
+    - key: get-team-capacity
+      name: Get team capacity
+      function: act-team-capacity
+      actionVerb: GET
+      description: Returns realistic and pessimistic capacity per sprint from recent
+        throughput, plus existing commitments, as aggregate numbers.
+      inputs:
+        teamKey:
+          title: Team key
+          type: string
+          required: true
+          description: Accord team key, for example PAY.
+    - key: get-request
+      name: Get dependency request
+      function: act-get-request
+      actionVerb: GET
+      description: Returns a dependency request with its status, size, needed-by date
+        and negotiation rounds.
+      inputs:
+        requestId:
+          title: Request ID
+          type: string
+          required: true
+          description: Accord request identifier.
+    - key: evaluate-options
+      name: Evaluate options
+      function: act-evaluate-options
+      actionVerb: GET
+      description: Runs the deterministic Accord planner for a request and returns up
+        to four options with traceable numbers. Optionally evaluates one
+        variation (minimum part earlier by N days).
+      inputs:
+        requestId:
+          title: Request ID
+          type: string
+          required: true
+          description: Accord request identifier.
+        earlierMinDays:
+          title: Minimum part earlier by days
+          type: integer
+          required: false
+          description: Optional variation, number of days the minimum part should be
+            delivered earlier.
+    - key: list-contracts
+      name: List contracts
+      function: act-list-contracts
+      actionVerb: GET
+      description: Lists dependency contracts for a team with agreed date range,
+        projected date and status (on track or at risk).
+      inputs:
+        teamKey:
+          title: Team key
+          type: string
+          required: false
+          description: Accord team key. When empty, contracts of the current user's teams
+            are returned.
+    - key: create-dependency-request
+      name: Create dependency request
+      function: act-create-request
+      actionVerb: CREATE
+      description: Creates a dependency request from a Jira issue to another team.
+        Does not change any Jira data.
+      inputs:
+        sourceIssueKey:
+          title: Source issue key
+          type: string
+          required: true
+          description: Jira issue key of the requesting team's work item.
+        providerTeamKey:
+          title: Provider team key
+          type: string
+          required: true
+          description: Accord team key of the team being asked.
+        title:
+          title: Title
+          type: string
+          required: true
+          description: Short description of what is needed.
+        size:
+          title: Size
+          type: string
+          required: true
+          description: S, M or L (1, 3 or 6 issues).
+        neededBy:
+          title: Needed by
+          type: string
+          required: true
+          description: Date in YYYY-MM-DD format.
+        minSize:
+          title: Minimum useful size
+          type: integer
+          required: false
+          description: Optional number of issues that is already useful on its own.
+  function:
+    - key: resolver
+      handler: index.resolverHandler
+    - key: negotiation-consumer
+      handler: index.negotiationConsumerHandler
+    - key: daily-monitor
+      handler: index.dailyMonitorHandler
+    - key: demo-seed-consumer
+      handler: index.demoSeedConsumerHandler
+    - key: dev-diag
+      handler: index.devDiagHandler
+    - key: act-team-charter
+      handler: index.getTeamCharterAction
+    - key: act-team-capacity
+      handler: index.getTeamCapacityAction
+    - key: act-get-request
+      handler: index.getRequestAction
+    - key: act-evaluate-options
+      handler: index.evaluateOptionsAction
+    - key: act-list-contracts
+      handler: index.listContractsAction
+    - key: act-create-request
+      handler: index.createDependencyRequestAction
+resources:
+  - key: panel
+    path: src/frontend/panel.tsx
+  - key: home
+    path: src/frontend/home.tsx
+  - key: byline
+    path: src/frontend/byline.tsx
+app:
+  id: ari:cloud:ecosystem::app/b3ad0126-cc44-4b56-94d0-dc7e24ba391e
+  runtime:
+    name: nodejs24.x
+    memoryMB: 256
+    architecture: arm64
+permissions:
+  scopes:
+    - read:jira-work
+    - write:jira-work
+    - read:jira-user
+    - read:sprint:jira-software
+    - write:sprint:jira-software
+    - read:board-scope:jira-software
+    - write:board-scope:jira-software
+    - read:issue-details:jira
+    - read:jql:jira
+    - read:project:jira
+    - manage:jira-project
+    - manage:jira-configuration
+    - read:page:confluence
+    - write:page:confluence
+    - read:space:confluence
+    - write:space:confluence
+    - read:label:confluence
+    - write:label:confluence
+    - storage:app
