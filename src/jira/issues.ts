@@ -1,5 +1,5 @@
 import { route } from '@forge/api';
-import { jira } from '../atlassian/http';
+import { jira, type Principal } from '../atlassian/http';
 
 export const ISSUE_FIELDS = ['summary', 'labels', 'issuetype', 'priority', 'duedate', 'status', 'parent'] as const;
 
@@ -48,12 +48,13 @@ interface SearchPage {
 }
 
 /** Enhanced JQL search (`/rest/api/3/search/jql`), token paginated. */
-export async function searchIssues(jql: string, maxIssues = 500): Promise<JiraIssue[]> {
+export async function searchIssues(jql: string, maxIssues = 500, as: Principal = 'app'): Promise<JiraIssue[]> {
   const result: JiraIssue[] = [];
   let nextPageToken: string | undefined;
   for (let page = 0; page < MAX_PAGES && result.length < maxIssues; page += 1) {
     const response = await jira<SearchPage>(route`/rest/api/3/search/jql`, {
       method: 'POST',
+      as,
       body: { jql, fields: [...ISSUE_FIELDS], maxResults: 100, nextPageToken },
     });
     result.push(...response.issues);
@@ -97,4 +98,86 @@ export async function createIssues(issues: readonly NewIssue[]): Promise<string[
     throw new Error(`Jira rejected ${response.errors.length} issue(s): ${JSON.stringify(response.errors).slice(0, 400)}`);
   }
   return response.issues.map((issue) => issue.key);
+}
+
+/** Issue keys must look like `ABC-123`; validated before they reach JQL or a route. */
+export const ISSUE_KEY = /^[A-Z][A-Z0-9_]{1,9}-[1-9][0-9]*$/;
+
+export async function getIssue(key: string, as: Principal = 'app'): Promise<JiraIssue> {
+  const fields = ISSUE_FIELDS.join(',');
+  return jira<JiraIssue>(route`/rest/api/3/issue/${key}?fields=${fields}`, { as });
+}
+
+/** Subset of `keys` the principal may browse (NFR-3). */
+export async function visibleIssueKeys(keys: readonly string[], as: Principal): Promise<Set<string>> {
+  const valid = [...new Set(keys)].filter((key) => ISSUE_KEY.test(key));
+  if (valid.length === 0) return new Set();
+  const issues = await searchIssues(`key in (${valid.join(',')})`, valid.length, as);
+  return new Set(issues.map((issue) => issue.key));
+}
+
+export async function createIssue(issue: NewIssue): Promise<string> {
+  const response = await jira<{ key: string }>(route`/rest/api/3/issue`, {
+    method: 'POST',
+    body: {
+      fields: {
+        project: { key: issue.projectKey },
+        summary: issue.summary,
+        issuetype: { name: issue.issueType },
+        priority: { name: issue.priority },
+        labels: issue.labels,
+        ...(issue.dueDate ? { duedate: issue.dueDate } : {}),
+      },
+    },
+  });
+  return response.key;
+}
+
+/** Plain-text comment rendered as one ADF paragraph per line. */
+export async function addComment(issueKey: string, text: string): Promise<string> {
+  const content = text.split('\n').map((line) => ({ type: 'paragraph', content: [{ type: 'text', text: line }] }));
+  const response = await jira<{ id: string }>(route`/rest/api/3/issue/${issueKey}/comment`, {
+    method: 'POST',
+    body: { body: { type: 'doc', version: 1, content } },
+  });
+  return response.id;
+}
+
+export interface IssueLink {
+  id?: string;
+  type: { name: string; inward?: string; outward?: string };
+  inwardIssue?: { key: string };
+  outwardIssue?: { key: string };
+}
+
+export async function listIssueLinks(issueKey: string): Promise<IssueLink[]> {
+  const issue = await jira<{ fields: { issuelinks?: IssueLink[] } }>(
+    route`/rest/api/3/issue/${issueKey}?fields=issuelinks`,
+  );
+  return issue.fields.issuelinks ?? [];
+}
+
+/**
+ * `link` was read from the blocker's `issuelinks`. Jira's issue linking model: an entry with
+ * `outwardIssue` is shown with the outward label ("blocks"), i.e. "<this issue> blocks <outwardIssue>".
+ * An entry with `inwardIssue` means the opposite direction ("is blocked by") and does not count.
+ */
+export function isBlocksFrom(link: IssueLink, blocked: string): boolean {
+  return link.type.name === 'Blocks' && link.outwardIssue?.key === blocked;
+}
+
+/**
+ * Creates "`blocker` blocks `blocked`" (built-in Blocks link type). POST /rest/api/3/issueLink stores the
+ * `inwardIssue` as the link source, which reads with the outward label ("blocks") — verified on the
+ * development site with `accord-dev-diag?action=verify-blocks-link` (see docs/spikes.md).
+ */
+export async function linkBlocks(blocker: string, blocked: string): Promise<void> {
+  await jira<void>(route`/rest/api/3/issueLink`, {
+    method: 'POST',
+    body: { type: { name: 'Blocks' }, inwardIssue: { key: blocker }, outwardIssue: { key: blocked } },
+  });
+}
+
+export async function deleteIssueLink(linkId: string): Promise<void> {
+  await jira<void>(route`/rest/api/3/issueLink/${linkId}`, { method: 'DELETE' });
 }

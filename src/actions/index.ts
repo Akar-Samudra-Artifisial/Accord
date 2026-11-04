@@ -1,4 +1,7 @@
-import { computeCapacity, isValidIsoDate, planOptions } from '../planner';
+import { computeCapacity, planOptions } from '../planner';
+import { contracts, createRequestFromIssue, dealSheet } from '../resolvers/negotiation';
+import { COST_CLASSES } from '../negotiation/orchestrator';
+import { clientError } from '../errors';
 import { DEMO_PAYMENTS_CHARTER, DEMO_SIMULATED_THROUGHPUT, demoPlannerInput } from '../demo/scenario';
 
 /**
@@ -6,6 +9,11 @@ import { DEMO_PAYMENTS_CHARTER, DEMO_SIMULATED_THROUGHPUT, demoPlannerInput } fr
  * M0: handlers answer from the demo scenario; persistence lands in M2.
  */
 type ActionPayload = Record<string, unknown>;
+
+/** Forge function context: Rovo passes the invoking user as `principal`. */
+interface ActionContext {
+  principal?: { accountId?: string };
+}
 
 interface ActionError {
   error: string;
@@ -40,11 +48,38 @@ export async function getTeamCapacityAction(payload: ActionPayload) {
   return { teamKey, source: 'Simulated history', capacity: computeCapacity(DEMO_SIMULATED_THROUGHPUT) };
 }
 
-export async function getRequestAction(payload: ActionPayload) {
+export async function getRequestAction(payload: ActionPayload, context?: ActionContext) {
   const requestId = readString(payload, 'requestId', true);
   if (isError(requestId)) return requestId;
-  // TODO(M2): read request and negotiation rounds from Forge SQL.
-  return { requestId, status: 'not-found', note: 'Request storage is not implemented yet (M2).' };
+  try {
+    const sheet = await dealSheet({ requestId }, context?.principal?.accountId);
+    return {
+      requestId,
+      status: sheet.request.status,
+      title: sheet.request.title,
+      size: sheet.request.size,
+      minSize: sheet.request.minSize,
+      neededBy: sheet.request.neededBy,
+      requester: sheet.requester.name,
+      provider: sheet.provider.name,
+      rounds: sheet.rounds,
+      transcript: sheet.transcript,
+      options: sheet.options.map(({ id, label, dateRange, meetsNeed, recommended, consequences, rulesUsed, explanation }) => ({
+        id,
+        label,
+        dateRange,
+        meetsNeed,
+        recommended,
+        consequences,
+        rulesUsed,
+        explanation,
+      })),
+      agreedOptionId: sheet.agreedOptionId,
+      contract: sheet.contract,
+    };
+  } catch (error) {
+    return { error: clientError('getRequest', error) };
+  }
 }
 
 export async function evaluateOptionsAction(payload: ActionPayload) {
@@ -59,27 +94,35 @@ export async function evaluateOptionsAction(payload: ActionPayload) {
   return { requestId, source: 'demo', ...result };
 }
 
-export async function listContractsAction(payload: ActionPayload) {
+export async function listContractsAction(payload: ActionPayload, context?: ActionContext) {
   const teamKey = readString(payload, 'teamKey', false);
   if (isError(teamKey)) return teamKey;
-  // TODO(M3): list contracts from Forge SQL.
-  return { teamKey: teamKey ?? null, contracts: [] };
+  try {
+    return { teamKey: teamKey ?? null, contracts: await contracts(context?.principal?.accountId, teamKey?.toUpperCase()) };
+  } catch (error) {
+    return { error: clientError('listContracts', error) };
+  }
 }
 
-export async function createDependencyRequestAction(payload: ActionPayload) {
+/** Creates the request only (no Jira change); the deal sheet still needs both team leads (NFR-2). */
+export async function createDependencyRequestAction(payload: ActionPayload, context?: ActionContext) {
   const fields = ['sourceIssueKey', 'providerTeamKey', 'title', 'size', 'neededBy'] as const;
-  const values: Record<string, string> = {};
   for (const field of fields) {
     const value = readString(payload, field, true);
     if (isError(value)) return value;
-    values[field] = value ?? '';
   }
-  if (!['S', 'M', 'L'].includes(values.size)) {
-    return { error: 'Input "size" must be S, M or L' };
+  const costClass = readString(payload, 'costClass', false);
+  if (isError(costClass)) return costClass;
+  if (costClass !== undefined && !(COST_CLASSES as readonly string[]).includes(costClass)) {
+    return { error: `Input "costClass" must be one of ${COST_CLASSES.join(', ')}` };
   }
-  if (!isValidIsoDate(values.neededBy)) {
-    return { error: 'Input "neededBy" must be a date in YYYY-MM-DD format' };
+  try {
+    const created = await createRequestFromIssue(
+      { ...payload, minSize: payload.minSize ?? null, costClass: costClass ?? 'standard' },
+      context?.principal?.accountId,
+    );
+    return { ...created, note: 'Negotiation started. Both team leads decide in the Accord deal sheet on the issue.' };
+  } catch (error) {
+    return { error: clientError('createDependencyRequest', error) };
   }
-  // TODO(M2): persist the request and enqueue negotiation round 1.
-  return { status: 'not-implemented', request: values };
 }

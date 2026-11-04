@@ -10,7 +10,8 @@ export class AtlassianApiError extends Error {
     readonly path: string,
     readonly detail: string,
   ) {
-    super(`${product} ${path} failed with HTTP ${status}: ${detail.slice(0, 400)}`);
+    // The response body stays in `detail` (logged server side), never in the message shown to clients.
+    super(`${product} ${path.split('?')[0]} failed with HTTP ${status}`);
     this.name = 'AtlassianApiError';
   }
 }

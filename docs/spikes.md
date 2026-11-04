@@ -48,7 +48,42 @@ Table counts afterwards: `teams 2, charters 2, throughput_samples 12, demo_seed_
 - Verified on 5.4.0: `accord-dev-diag?action=byline&page=1212438` (Confluence install) → Mobile, valid, no missing
   fields; page 1114116 → Payments, valid.
 
+## M3 negotiation on the site (5.5.0)
+
+- `accord-dev-diag?action=create-request&issue=MOB-1&provider=PAY&size=M&min=1&neededBy=2026-11-20&cost=fixed-date`
+  created `req-e16d1d4a-…` at 19:15:52Z; `forge logs`: round1 done (3 offers) in 3304 ms, round2 done
+  (3 options, recommended 1) in 634 ms. Broker round recorded at 19:15:59Z → deal sheet ready ~7 s after creation
+  (target < 60 s). Options: partial 2026-11-14 (meets need, recommended), later 2026-11-28, reject.
+- Approval needs the two leads in the browser: identity always comes from `context.accountId`, the diag trigger has
+  no way to approve. Approve → apply-contract on the site is still pending browser verification.
+- One person may approve as lead of both teams only when `ACCORD_DEMO_ALLOW_SAME_APPROVER=true` (development only,
+  since 5.6.0); otherwise dual control refuses the second approval.
+
+## M3 review fixes (5.6.0)
+
+- **Blocks direction (verified):** `accord-dev-diag?action=verify-blocks-link&blocker=PAY-1&blocked=MOB-1` with the
+  production `linkBlocks` (`POST /rest/api/3/issueLink` body `inwardIssue: blocker, outwardIssue: blocked`) read back
+  `PAY-1 blocks MOB-1` from PAY-1 (entry with `outwardIssue`) and `MOB-1 is blocked by PAY-1` from MOB-1; the test
+  link (id 10020) was deleted again. So in the POST body the `inwardIssue` is the "blocks" side, and
+  `hasBlocksLink` only counts a Blocks entry on the blocker whose `outwardIssue` is the blocked issue (`isBlocksFrom`).
+- **Deliverable idempotency (choice):** primary key is `contracts.deliverable_issue_key` in SQL. Before `createIssue`
+  an intent row (`contract:deliverable-intent`) goes to `audit_log`; the unique label `accord-<requestId>` plus JQL is
+  only the fallback for "created in Jira, key not stored". If an intent is younger than 20 s and JQL finds nothing,
+  the job retries (backoff 10/20/40/80 s) instead of creating again, covering Jira's search index lag. Chosen over a
+  pure SQL lock because Jira create is not transactional with SQL; the residual risk is an index lag > 20 s after a
+  crash between create and storing the key.
+- MOB-1 → PAY request `req-35a12a72-…` on 5.6.0: round1 done (3 offers) in 3341 ms, round2 done in 601 ms,
+  `awaiting-approval` ~7 s after creation (`forge logs`).
+
+## Deferred to M4 (review round 1)
+
+- Rovo actions `get-team-capacity` and `evaluate-options` still answer from the demo scenario
+  (`src/actions/index.ts`, demo data instead of stored requests).
+- Separate the demo seed scopes (`manifest.yml`, project/space creation) from the production build.
+
 ## Open items
+
+- Browser check of the deal sheet, two approvals and apply-contract (deliverable issue, link, comments) on the site.
 
 - Visual check of the byline popup in the browser is still pending.
 

@@ -45,6 +45,19 @@ forge install         # pick a Jira + Confluence developer site
 `manifest.yml` ships with the placeholder `ari:cloud:ecosystem::app/TODO-run-forge-register`; run
 `forge register` before `forge lint`, `forge deploy`, or `forge install`.
 
+## Before production
+
+- Remove the `accord-dev-diag` web trigger, its `dev-diag` function from `manifest.yml`, and `src/diag/`. The web
+  trigger URL is public; until removal it answers 404 unless `ACCORD_DIAG_ENABLED=true`.
+- Unset the development-only variables: `forge variables unset -e <env> ACCORD_DIAG_ENABLED` and
+  `forge variables unset -e <env> ACCORD_DEMO_ALLOW_SAME_APPROVER`. Never set `ACCORD_DEMO_ALLOW_SAME_APPROVER` in
+  staging or production: without it, one account cannot approve for both teams (dual control).
+- Separate the demo seed scopes (project/space creation) from the production build (deferred to M4).
+
+Development only: `forge variables set -e development ACCORD_DIAG_ENABLED true` and
+`forge variables set -e development ACCORD_DEMO_ALLOW_SAME_APPROVER true` (single-account demo; the deal sheet shows
+"Demo mode: same approver allowed").
+
 ## Planner rules (summary)
 
 - Capacity from the last 6 sprints: realistic = median, pessimistic = second lowest; fewer than 4 sprints is flagged as limited data.

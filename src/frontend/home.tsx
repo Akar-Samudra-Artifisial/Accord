@@ -4,7 +4,6 @@ import ForgeReconciler, {
   ButtonGroup,
   Checkbox,
   DynamicTable,
-  Heading,
   Inline,
   Link,
   Lozenge,
@@ -25,6 +24,7 @@ import ForgeReconciler, {
   Textfield,
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
+import { DealSheetModal, StatusLozenge, type RequestStatus } from './dealsheet';
 
 type Failure = { ok: false; error: string };
 
@@ -179,7 +179,7 @@ const TeamsTab = ({ teams, reload }: { teams: TeamView[] | null; reload: () => P
         <Textfield
           name="projectKey"
           placeholder="Jira project key, for example PAY"
-          value={projectKey}
+          aria-label="Jira project key"
           onChange={(event) => setProjectKey(event.target.value)}
         />
         <Button
@@ -312,6 +312,157 @@ const DemoTab = ({ onSeeded }: { onSeeded: () => Promise<void> }) => {
   );
 };
 
+interface RequestSummary {
+  id: string;
+  title: string;
+  status: RequestStatus;
+  sourceIssueKey: string;
+  neededBy: string;
+  requester: string;
+  provider: string;
+  pendingFor: Array<'requester' | 'provider'>;
+}
+
+const InboxTab = () => {
+  const [items, setItems] = useState<RequestSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const result = await call<{ items: RequestSummary[] }>('getInbox');
+    if (result.ok) setItems(result.items);
+    else setError(result.error);
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (error) {
+    return (
+      <SectionMessage appearance="error">
+        <Text>{error}</Text>
+      </SectionMessage>
+    );
+  }
+  if (!items) return <Spinner label="Loading inbox" />;
+  return (
+    <Stack space="space.200">
+      <Text>Requests where you are an approver for one of the teams. Requests waiting for your decision come first.</Text>
+      <DynamicTable
+        caption="Inbox"
+        head={{
+          cells: [
+            { key: 'request', content: 'Request' },
+            { key: 'teams', content: 'Teams' },
+            { key: 'needed', content: 'Needed by' },
+            { key: 'status', content: 'Status' },
+            { key: 'action', content: 'Action' },
+          ],
+        }}
+        rows={items.map((item) => ({
+          key: item.id,
+          cells: [
+            { key: 'request', content: <Text>{`${item.title} (${item.sourceIssueKey})`}</Text> },
+            { key: 'teams', content: <Text>{`${item.requester} → ${item.provider}`}</Text> },
+            { key: 'needed', content: <Text>{item.neededBy}</Text> },
+            {
+              key: 'status',
+              content: (
+                <Inline space="space.050" shouldWrap>
+                  <StatusLozenge status={item.status} />
+                  {item.pendingFor.length ? <Lozenge appearance="new">Your decision</Lozenge> : null}
+                </Inline>
+              ),
+            },
+            { key: 'action', content: <Button onClick={() => setOpen(item.id)}>Open deal sheet</Button> },
+          ],
+        }))}
+        emptyView={<Text>No requests need you right now.</Text>}
+      />
+      <ModalTransition>
+        {open ? (
+          <DealSheetModal
+            requestId={open}
+            onChanged={() => void load()}
+            onClose={() => {
+              setOpen(null);
+              void load();
+            }}
+          />
+        ) : null}
+      </ModalTransition>
+    </Stack>
+  );
+};
+
+interface ContractRow {
+  contractId: number;
+  title: string;
+  requester: string;
+  provider: string;
+  sourceIssueKey: string;
+  deliverableIssueKey: string | null;
+  agreedDateMin: string;
+  agreedDateMax: string;
+  projectedDate: string | null;
+  status: 'applying' | 'on-track' | 'at-risk';
+}
+
+const CONTRACT_STATUS: Record<ContractRow['status'], { text: string; appearance: 'inprogress' | 'success' | 'removed' }> = {
+  applying: { text: 'Updating Jira', appearance: 'inprogress' },
+  'on-track': { text: 'On track', appearance: 'success' },
+  'at-risk': { text: 'At risk', appearance: 'removed' },
+};
+
+const ContractsTab = () => {
+  const [rows, setRows] = useState<ContractRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    call<{ contracts: ContractRow[] }>('getContracts').then((result) =>
+      result.ok ? setRows(result.contracts) : setError(result.error),
+    );
+  }, []);
+
+  if (error) {
+    return (
+      <SectionMessage appearance="error">
+        <Text>{error}</Text>
+      </SectionMessage>
+    );
+  }
+  if (!rows) return <Spinner label="Loading contracts" />;
+  return (
+    <DynamicTable
+      caption="Contracts"
+      head={{
+        cells: [
+          { key: 'contract', content: 'Contract' },
+          { key: 'teams', content: 'Requester → provider' },
+          { key: 'issues', content: 'Issues' },
+          { key: 'agreed', content: 'Agreed dates' },
+          { key: 'status', content: 'Status' },
+        ],
+      }}
+      rows={rows.map((row) => ({
+        key: String(row.contractId),
+        cells: [
+          { key: 'contract', content: <Text>{row.title}</Text> },
+          { key: 'teams', content: <Text>{`${row.requester} → ${row.provider}`}</Text> },
+          { key: 'issues', content: <Text>{`${row.deliverableIssueKey ?? 'pending'} blocks ${row.sourceIssueKey}`}</Text> },
+          { key: 'agreed', content: <Text>{`${row.agreedDateMin} – ${row.agreedDateMax}`}</Text> },
+          {
+            key: 'status',
+            content: <Lozenge appearance={CONTRACT_STATUS[row.status].appearance}>{CONTRACT_STATUS[row.status].text}</Lozenge>,
+          },
+        ],
+      }))}
+      emptyView={<Text>No contracts yet. A contract appears after both team leads approve a deal sheet.</Text>}
+    />
+  );
+};
+
 const App = () => {
   const [teams, setTeams] = useState<TeamView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -333,7 +484,6 @@ const App = () => {
 
   return (
     <Stack space="space.200">
-      <Heading size="large">Accord</Heading>
       {error ? (
         <SectionMessage appearance="error">
           <Text>{error}</Text>
@@ -347,10 +497,10 @@ const App = () => {
           <Tab>Demo</Tab>
         </TabList>
         <TabPanel>
-          <Text>Incoming dependency requests will appear here (milestone M3).</Text>
+          <InboxTab />
         </TabPanel>
         <TabPanel>
-          <Text>Active contracts will appear here (milestone M3).</Text>
+          <ContractsTab />
         </TabPanel>
         <TabPanel>
           <TeamsTab teams={teams} reload={reload} />
