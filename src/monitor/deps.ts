@@ -1,11 +1,13 @@
+import { randomUUID } from 'node:crypto';
 import { Queue } from '@forge/events';
 import type { ContractStatus } from '../negotiation/types';
+import { openRenegotiation } from '../negotiation/orchestrator';
 import { run, select } from '../sql/db';
 import { addComment, ISSUE_KEY, searchIssues } from '../jira/issues';
 import { audit } from '../teams/repository';
 import { loadCommitments, teamCapacity } from '../teams/service';
 import { contractsForProvider } from '../negotiation/store';
-import { teamDirectory } from '../negotiation/deps';
+import { productionDeps, teamDirectory } from '../negotiation/deps';
 import { MONITOR_QUEUE_KEY, MONITORED_STATUSES, type MonitorDeps, type MonitorEvent, type MonitorStore } from './monitor';
 
 export { MONITOR_QUEUE_KEY, type MonitorEvent };
@@ -53,6 +55,15 @@ export const sqlMonitorStore: MonitorStore = {
     );
     return result.affectedRows > 0;
   },
+  async renegotiationBaseline(requestId) {
+    const rows = await select<{ projected_date: string | null }>(
+      `SELECT c.projected_date FROM renegotiations n JOIN contracts c ON c.id = n.contract_id WHERE n.request_id = ?`,
+      [requestId],
+    );
+    if (rows.length === 0) return null;
+    const projected = rows[0].projected_date;
+    return { projectedDate: projected ? String(projected).slice(0, 10) : null };
+  },
   audit,
 };
 
@@ -62,9 +73,10 @@ const ACCOUNT_ID = /^[A-Za-z0-9:_-]{1,128}$/;
 export const monitorDeps: MonitorDeps = {
   store: sqlMonitorStore,
   teams: {
-    getTeam: teamDirectory.getTeam,
+    // Wrapped: negotiation/deps imports this module back, so teamDirectory is only read at call time.
+    getTeam: (teamId) => teamDirectory.getTeam(teamId),
     capacity: teamCapacity,
-    approvers: teamDirectory.approvers,
+    approvers: (team) => teamDirectory.approvers(team),
   },
   jira: {
     commitments: (team) => loadCommitments(team),
@@ -79,6 +91,7 @@ export const monitorDeps: MonitorDeps = {
     },
   },
   today: () => new Date().toISOString().slice(0, 10),
+  renegotiate: (trigger) => openRenegotiation(productionDeps, trigger, `req-${randomUUID()}`),
 };
 
 /** Queues one `monitor-team` job per provider team with monitored contracts. */

@@ -5,6 +5,8 @@ import { myPermissions } from '../jira/permissions';
 import { listSprints, moveIssuesToBacklog, moveIssuesToSprint } from '../jira/sprints';
 import { MONITOR_QUEUE_KEY, nearestContractProjection, type MonitorEvent } from '../monitor/monitor';
 import { monitorDeps } from '../monitor/deps';
+import { productionDeps } from '../negotiation/deps';
+import { cancelUndecidedRenegotiations } from '../negotiation/orchestrator';
 import { select } from '../sql/db';
 import { audit, getTeamByKey } from '../teams/repository';
 import { DEMO_BUG_LABEL, LEGACY_DEMO_BUG_LABEL, MAX_DEMO_BUGS, type DemoBugPort } from './critical-bugs';
@@ -53,6 +55,10 @@ export const demoBugPort: DemoBugPort = {
   },
   moveToSprint: moveIssuesToSprint,
   moveToBacklog: moveIssuesToBacklog,
+  async cancelRenegotiations(projectKey, actor) {
+    const team = await requireTeam(projectKey);
+    return cancelUndecidedRenegotiations(productionDeps, team.id, actor, 'Demo bugs reset: the risk that opened the renegotiation was removed.');
+  },
   async queueMonitor(projectKey) {
     const body: MonitorEvent = { type: 'monitor-team', teamId: (await requireTeam(projectKey)).id };
     // A short delay lets the Jira sprint moves settle before the monitor reads the sprint.

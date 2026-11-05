@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   createActionHandlers,
+  isConfirmed,
   parseCreateInput,
   resolveTeamRef,
   viewerFromContext,
@@ -27,13 +28,18 @@ class RecordingServices implements ActionServices {
     { teamKey: 'PAY', name: 'Payments', jiraProjectKey: 'PAY' },
     { teamKey: 'MOB', name: 'Mobile', jiraProjectKey: 'MOB' },
   ];
-  teams = () => Promise.resolve(this.registered);
+  teamViewers: Viewer[] = [];
+  teams = (viewer: Viewer) => {
+    this.teamViewers.push(viewer);
+    return Promise.resolve(this.registered);
+  };
   teamCharter = (teamKey: string, viewer: Viewer) => this.record('teamCharter', teamKey, viewer);
   teamCapacity = (teamKey: string, viewer: Viewer) => this.record('teamCapacity', teamKey, viewer);
   request = (requestId: string, viewer: Viewer) => this.record('request', requestId, viewer);
   evaluateOptions = (requestId: string, days: number | undefined, viewer: Viewer) => this.record('evaluateOptions', requestId, days, viewer);
   contracts = (teamKey: string | undefined, viewer: Viewer) => this.record('contracts', teamKey, viewer);
   createRequest = (input: CreateRequestInput, viewer: Viewer) => this.record('createRequest', input, viewer);
+  previewRequest = (input: CreateRequestInput, viewer: Viewer) => this.record('previewRequest', input, viewer);
 }
 
 const validCreate = {
@@ -124,8 +130,29 @@ describe('Rovo action handlers', () => {
     expect(parseCreateInput({ ...validCreate, title: '' })).toMatchObject({ ok: true, value: { title: '' } });
   });
 
-  it('list-teams returns the registered teams', async () => {
-    expect(await handlers.listTeams()).toEqual({ teams: services.registered });
+  it('list-teams returns the teams the services allow for the viewer (browse check as the user)', async () => {
+    expect(await handlers.listTeams(USER)).toEqual({ teams: services.registered });
+    expect(services.teamViewers).toEqual([USER]);
+  });
+
+  it('create-dependency-request only previews without confirm=true, and creates with it', async () => {
+    expect(isConfirmed({})).toBe(false);
+    expect(isConfirmed({ confirm: false })).toBe(false);
+    expect(isConfirmed({ confirm: 'yes' })).toBe(false);
+    expect(isConfirmed({ confirm: 1 })).toBe(false);
+    expect(isConfirmed({ confirm: 'true' })).toBe(true);
+    expect(await handlers.createDependencyRequest(validCreate, USER)).toEqual({ from: 'previewRequest' });
+    expect(await handlers.createDependencyRequest({ ...validCreate, confirm: false }, USER)).toEqual({ from: 'previewRequest' });
+    expect(services.calls.map((call) => call.name)).toEqual(['previewRequest', 'previewRequest']);
+    expect(await handlers.createDependencyRequest({ ...validCreate, confirm: true }, USER)).toEqual({ from: 'createRequest' });
+    expect(services.calls.at(-1)).toMatchObject({ name: 'createRequest', args: [{ providerTeamKey: 'PAY', sourceIssueKey: 'MOB-2' }, USER] });
+  });
+
+  it('the manifest marks confirm as a required boolean and tells clients to preview first', () => {
+    const manifest = readFileSync(join(__dirname, '../../manifest.yml'), 'utf8');
+    const block = manifest.slice(manifest.indexOf('- key: create-dependency-request'), manifest.indexOf('  function:\n'));
+    expect(block.replace(/\s+/g, ' ')).toContain('Call first without confirm to preview; only set confirm=true after the user explicitly agrees.');
+    expect(block).toMatch(/confirm:\n\s+title: Confirm\n\s+type: boolean\n\s+required: true/);
   });
 
   describe('team name resolution (one-atlas: PAY belongs to another app, Payments is ACPAY)', () => {
@@ -137,7 +164,7 @@ describe('Rovo action handlers', () => {
     });
 
     it('maps a team name (any case) or key to the Accord key for every team input', async () => {
-      await handlers.createDependencyRequest({ ...validCreate, providerTeamKey: 'Payments' }, USER);
+      await handlers.createDependencyRequest({ ...validCreate, providerTeamKey: 'Payments', confirm: true }, USER);
       await handlers.getTeamCharter({ teamKey: 'payments' }, USER);
       await handlers.getTeamCapacity({ teamKey: 'acmob' }, USER);
       await handlers.listContracts({ teamKey: 'MOBILE' }, USER);

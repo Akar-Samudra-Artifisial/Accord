@@ -10,6 +10,7 @@ export const CONTRACT_STATUS_DISPLAY: Readonly<Record<ContractStatus, string>> =
   'on-track': 'On track',
   'at-risk': 'At risk',
   unknown: 'Not enough data',
+  superseded: 'Superseded',
 };
 
 /** "on Nov 29, 2026" / "between Nov 20, 2026 and Nov 29, 2026"; `fallback` when no date is set. */

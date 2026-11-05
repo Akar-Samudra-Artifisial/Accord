@@ -45,18 +45,32 @@ describe('sqlStore.insertRequest (SQL)', () => {
     expect(await sqlStore.insertRequest(request(), { maxPerProviderPerHour: 20 })).toBe('inserted');
     const [statement, params] = db.run.mock.calls[0];
     expect(statement).toMatch(/INSERT INTO requests[\s\S]*SELECT[\s\S]*WHERE NOT EXISTS/);
-    expect(statement).toMatch(/INTERVAL 1 HOUR\) < \?/);
-    expect(params?.slice(-6)).toEqual(['MOB-7', 'team-PAY', 'negotiating', 'awaiting-approval', 'team-PAY', 20]);
+    expect(statement).toMatch(/created_by <> \?\s+AND created_at > CURRENT_TIMESTAMP - INTERVAL 1 HOUR\) < \?/);
+    expect(params?.slice(-7)).toEqual(['MOB-7', 'team-PAY', 'negotiating', 'awaiting-approval', 'team-PAY', 'app', 20]);
+  });
+
+  it('reports exists when the id is already stored (parallel attempt), also on a primary key error', async () => {
+    db.run.mockResolvedValueOnce({ affectedRows: 0 });
+    db.select.mockResolvedValueOnce([{ id: 'x' }]);
+    expect(await sqlStore.insertRequest(request(), { maxPerProviderPerHour: 20 })).toBe('exists');
+    db.run.mockRejectedValueOnce(new Error('Duplicate entry for key PRIMARY'));
+    db.select.mockResolvedValueOnce([{ id: 'x' }]);
+    expect(await sqlStore.insertRequest(request(), { maxPerProviderPerHour: 20 })).toBe('exists');
+    db.run.mockRejectedValueOnce(new Error('connection reset'));
+    db.select.mockResolvedValueOnce([]);
+    await expect(sqlStore.insertRequest(request(), { maxPerProviderPerHour: 20 })).rejects.toThrow('connection reset');
   });
 
   it('reports a duplicate when an open request exists', async () => {
     db.run.mockResolvedValueOnce({ affectedRows: 0 });
+    db.select.mockResolvedValueOnce([]);
     db.select.mockResolvedValueOnce([{ n: 1 }]);
     expect(await sqlStore.insertRequest(request(), { maxPerProviderPerHour: 20 })).toBe('duplicate');
   });
 
   it('reports the provider limit otherwise', async () => {
     db.run.mockResolvedValueOnce({ affectedRows: 0 });
+    db.select.mockResolvedValueOnce([]);
     db.select.mockResolvedValueOnce([{ n: 0 }]);
     expect(await sqlStore.insertRequest(request(), { maxPerProviderPerHour: 20 })).toBe('provider-limit');
   });

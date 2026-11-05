@@ -40,6 +40,8 @@ export interface DemoBugPort {
   nearestContract(projectKey: string): Promise<NearestContractProjection | null>;
   moveToSprint(sprintId: number, issueKeys: readonly string[]): Promise<void>;
   moveToBacklog(issueKeys: readonly string[]): Promise<void>;
+  /** Cancels the provider's renegotiations that are still negotiating or awaiting approval; returns their ids. */
+  cancelRenegotiations(projectKey: string, actor: string | null): Promise<string[]>;
   /** Queues the monitor for this provider team so the new status shows without another click. */
   queueMonitor(projectKey: string): Promise<void>;
   /** Seconds since the last `demo-bugs-intent` audit entry; null when none. */
@@ -137,11 +139,15 @@ export async function addDemoBugs(port: DemoBugPort, projectKey: string, actor: 
   return result;
 }
 
-/** Moves the open demo bugs to the backlog (never deleted) and queues the monitor again. */
+/**
+ * Moves the open demo bugs to the backlog (never deleted), cancels the renegotiations the bugs opened that
+ * nobody decided yet (kept and audited, FR-14), and queues the monitor again.
+ */
 export async function resetDemoBugs(port: DemoBugPort, projectKey: string, actor: string | null) {
   const moved = (await port.findBugs(projectKey)).map((issue) => issue.key);
   if (moved.length > 0) await port.moveToBacklog(moved);
+  const cancelledRenegotiations = await port.cancelRenegotiations(projectKey, actor);
   await port.queueMonitor(projectKey);
-  await port.audit('demo-bugs-reset', actor, { moved });
-  return { projectKey, moved, monitorQueued: true };
+  await port.audit('demo-bugs-reset', actor, { moved, cancelledRenegotiations });
+  return { projectKey, moved, cancelledRenegotiations, monitorQueued: true };
 }

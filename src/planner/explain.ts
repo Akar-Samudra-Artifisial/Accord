@@ -17,6 +17,8 @@ const STEP_TEMPLATES: Readonly<Record<string, string>> = {
     'The charter reserves at most {sharePercent}% of pessimistic capacity for other teams, which is {cap|issue} per sprint.',
   requested: 'The request needs {requested|issue} by {neededBy}.',
   variation: 'Variation: the minimum part is evaluated {days|day} earlier, by {neededByMin}.',
+  'work-ahead':
+    'As the contract monitor projects it, {aheadIssues|issue} of open sprint work and other contracts come first; at {pessimistic|issue} per sprint this request is done by {aheadDate}.',
   'room-before-need':
     'Before {neededBy}, room for {usable|issue} for this request remains in {sprintCount|sprint} after existing commitments.',
   'on-time':

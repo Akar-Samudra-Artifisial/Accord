@@ -3,7 +3,7 @@ import { describeRule } from '../planner';
 import { getCharter, getTeamByKey, listTeams, type Team } from '../teams/repository';
 import { loadCommitments, teamCapacity } from '../teams/service';
 import { teamDirectory } from '../negotiation/deps';
-import { contracts, createRequestFromIssue, dealSheet, evaluateRequestOptions } from '../resolvers/negotiation';
+import { contracts, createRequestFromIssue, dealSheet, evaluateRequestOptions, previewRequestFromIssue } from '../resolvers/negotiation';
 import { myPermissions } from '../jira/permissions';
 import { route } from '@forge/api';
 import { jira } from '../atlassian/http';
@@ -11,7 +11,7 @@ import { ISSUE_KEY } from '../jira/issues';
 import { requireTeamAccess, type TeamAccessChecks } from './access';
 import { contractLinks, parseBaseUrl, requestLinks, siteLinks, type SiteLinks } from './links';
 import type { ActionServices, Viewer } from './handlers';
-import { contractDisplay, neededByDates, optionDates, sprintDates } from './display';
+import { contractDisplay, neededByDates, optionDates, rangeDisplay, sprintDates } from './display';
 
 /** Production services for the Rovo actions: Forge SQL, Jira and Confluence data only (no demo data). */
 
@@ -50,8 +50,13 @@ export async function links(): Promise<SiteLinks> {
 
 export const actionServices: ActionServices = {
   // Keys and names only (no leads, approvers or charter content), so agents can map names to keys.
-  async teams() {
-    return (await listTeams()).map(({ teamKey, name, jiraProjectKey }) => ({ teamKey, name, jiraProjectKey }));
+  // Only teams whose Jira project the viewer can browse (checked as the user, one call per project).
+  async teams(viewer) {
+    // `as: 'app'` only from the development diag trigger (app permissions, no user).
+    if (viewer.as === 'user') requireSignedIn(viewer);
+    const all = await listTeams();
+    const browsable = await Promise.all(all.map((team) => accessChecks.canBrowseProject(team.jiraProjectKey, viewer)));
+    return all.filter((_, index) => browsable[index]).map(({ teamKey, name, jiraProjectKey }) => ({ teamKey, name, jiraProjectKey }));
   },
 
   async teamCharter(teamKey, viewer) {
@@ -160,7 +165,21 @@ export const actionServices: ActionServices = {
   async contracts(teamKey, viewer) {
     const site = await links();
     const rows = await contracts(viewer.accountId, teamKey, viewer.as);
-    return { teamKey: teamKey ?? null, contracts: rows.map((row) => ({ ...contractDisplay(row), ...contractLinks(site, row) })) };
+    return {
+      teamKey: teamKey ?? null,
+      contracts: rows.map(({ supersededBy, ...row }) => ({
+        ...contractDisplay(row),
+        ...contractLinks(site, row),
+        // FR-14: the renegotiated contract that replaced this one, with display dates only.
+        supersededBy: supersededBy
+          ? {
+              requestId: supersededBy.requestId,
+              contractId: supersededBy.contractId,
+              agreedDisplay: rangeDisplay(supersededBy.agreedDateMin, supersededBy.agreedDateMax, 'No date agreed'),
+            }
+          : null,
+      })),
+    };
   },
 
   async createRequest(input, viewer) {
@@ -170,6 +189,18 @@ export const actionServices: ActionServices = {
       sourceIssueKey: input.sourceIssueKey,
       ...requestLinks(await links(), input.sourceIssueKey),
       note: 'Negotiation started. Both team leads decide in the Accord deal sheet on the source issue (url); agents cannot approve.',
+    };
+  },
+
+  async previewRequest(input, viewer) {
+    const { neededBy, ...preview } = await previewRequestFromIssue({ ...input }, viewer.accountId, viewer.as);
+    return {
+      preview: true,
+      created: false,
+      ...preview,
+      ...neededByDates(neededBy),
+      ...requestLinks(await links(), preview.sourceIssueKey),
+      note: 'Nothing was created. Show these values to the user; call again with confirm=true only after the user explicitly agrees.',
     };
   },
 };

@@ -1,5 +1,5 @@
 import { SIZE_ISSUES } from './cost';
-import { buildHorizon } from './options';
+import { buildHorizon, sequentialFinishIndex } from './options';
 import type { IsoDate, Size, Sprint } from './types';
 
 export type ProjectionStatus = 'on-track' | 'at-risk';
@@ -44,11 +44,9 @@ export function projectContract(input: ProjectionInput): Projection {
     input.earlierContractSizes.reduce((sum, size) => sum + SIZE_ISSUES[size], 0) +
     SIZE_ISSUES[input.size];
   const horizon = buildHorizon(input.sprints, input.today);
-  let projectedDate: IsoDate | null = null;
-  if (input.pessimistic > 0) {
-    const index = horizon.findIndex((_, i) => input.pessimistic * (i + 1) >= workAhead);
-    projectedDate = index >= 0 ? horizon[index].endDate : null;
-  }
+  // Same rule the planner applies to renegotiations (PlannerInput.workAhead).
+  const index = sequentialFinishIndex(input.pessimistic, workAhead, horizon.length);
+  const projectedDate: IsoDate | null = index >= 0 ? horizon[index].endDate : null;
   const status: ProjectionStatus = projectedDate !== null && projectedDate <= input.agreedDateMax ? 'on-track' : 'at-risk';
   return { status, projectedDate, workAhead };
 }

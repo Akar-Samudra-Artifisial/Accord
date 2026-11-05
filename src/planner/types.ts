@@ -80,6 +80,23 @@ export interface PlannerInput {
   commitments: WorkItem[];
   today: IsoDate;
   variation?: PlannerVariation;
+  /**
+   * Contract monitor rule (FR-14, NFR-1), set for renegotiations: issues the provider finishes before this
+   * request at pessimistic throughput (open work of the counted sprints plus the other contracts). No option
+   * promises a date earlier than this sequential projection; shifting a counted issue out of the counted
+   * sprints lowers it.
+   */
+  workAhead?: PlannerWorkAhead;
+}
+
+export interface PlannerWorkAhead {
+  issues: number;
+  /** Commitments included in `issues`. */
+  countedKeys: string[];
+  /** Sprints whose open issues the monitor counts (active and next). */
+  countedSprintIds: string[];
+  /** Deliverables of other contracts: never shifted, the agreed work stays where it is. */
+  pinnedKeys?: string[];
 }
 
 export type OptionKind = 'on-time' | 'on-time-with-shift' | 'partial' | 'later' | 'reject';

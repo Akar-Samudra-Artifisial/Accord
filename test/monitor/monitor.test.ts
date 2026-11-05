@@ -2,14 +2,16 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   monitorProviderTeam,
   nearestContractProjection,
+  providerWorkAhead,
   type MonitorDeps,
   type MonitoredContract,
   type MonitorStore,
   type NotificationState,
 } from '../../src/monitor/monitor';
-import type { ContractStatus } from '../../src/negotiation/types';
+import { APP_CREATOR, type ContractStatus } from '../../src/negotiation/types';
+import { applyContract, decide, openRenegotiation, runRound1, runRound2, type RenegotiationTrigger } from '../../src/negotiation/orchestrator';
 import { projectContract, type Sprint, type WorkItem } from '../../src/planner';
-import { MOB, PAY, request } from '../negotiation/fakes';
+import { MOB, PAY, harness, request } from '../negotiation/fakes';
 
 const SPRINTS: Sprint[] = [
   { id: '2', name: 'Payments Sprint 41', startDate: '2026-11-01', endDate: '2026-11-14', state: 'active' },
@@ -55,6 +57,11 @@ class MemoryMonitorStore implements MonitorStore {
     if (this.notifications.some((n) => n.contractId === contractId && n.seq === seq && n.issueKey === issueKey)) return false;
     this.notifications.push({ contractId, seq, status, issueKey });
     return true;
+  }
+  /** Request id of a renegotiation → projected date of the contract it replaced. */
+  baselines = new Map<string, string | null>();
+  async renegotiationBaseline(requestId: string) {
+    return this.baselines.has(requestId) ? { projectedDate: this.baselines.get(requestId) ?? null } : null;
   }
   async audit(entityType: string, entityId: string, action: string, _actor: string | null, payload: unknown) {
     this.auditLog.push({ entityType, entityId, action, payload });
@@ -109,8 +116,15 @@ describe('monitorProviderTeam', () => {
           comments.push({ issueKey, text, mentions });
         },
       },
+      renegotiate: async (trigger) => {
+        triggers.push(trigger);
+        return { status: 'opened', requestId: 'req-renegotiation', detail: '' };
+      },
     };
+    triggers = [];
   });
+
+  let triggers: RenegotiationTrigger[] = [];
 
   const addBugs = () => commitments.push(work('PAY-200'), work('PAY-201'));
   const removeBugs = () => {
@@ -146,6 +160,180 @@ describe('monitorProviderTeam', () => {
     await monitorProviderTeam(deps, PAY.id);
     expect(comments).toHaveLength(2);
     expect(store.auditLog.filter((e) => e.action === 'status-changed')).toHaveLength(1);
+  });
+
+  it('opens exactly one renegotiation as the app when a contract goes at risk, even after two runs (FR-14)', async () => {
+    const h = harness();
+    const parent = store.contracts[1];
+    await h.store.insertRequest({ ...parent.request });
+    h.store.contracts.push({ ...parent.contract });
+    let next = 0;
+    deps.renegotiate = (trigger) => openRenegotiation(h.deps, trigger, `req-00000000-0000-4000-8000-00000000000${++next}`);
+    addBugs();
+    const first = await monitorProviderTeam(deps, PAY.id);
+    expect(first.renegotiations).toEqual([expect.objectContaining({ contractId: 2, status: 'opened' })]);
+    const second = await monitorProviderTeam(deps, PAY.id);
+    expect(second.renegotiations).toEqual([expect.objectContaining({ contractId: 2, status: 'exists' })]);
+
+    const opened = [...h.store.requests.values()].filter((r) => r.createdBy === APP_CREATOR);
+    expect(opened).toHaveLength(1);
+    expect(opened[0]).toMatchObject({ sourceIssueKey: 'MOB-3', providerTeamId: PAY.id, status: 'negotiating' });
+    const audit = h.store.auditLog.filter((e) => e.action === 'renegotiation-opened');
+    expect(audit).toHaveLength(1);
+    expect(audit[0].payload).toMatchObject({
+      as: 'app',
+      episode: 1,
+      note: 'Renegotiation: contract PAY-13 → MOB-3 at risk; projected finish Dec 12, 2026',
+    });
+    // Only the monitor's risk comments; the renegotiation comment comes with its deal sheet (round 2).
+    expect(comments).toHaveLength(2);
+  });
+
+  it('regression: critical bugs → renegotiation → apply → the new contract is on track and not renegotiated again (FR-14, NFR-1)', async () => {
+    // Two Low-priority (shiftable) stories in the next sprint, so the planner can also offer a shift.
+    commitments = [
+      ...Array.from({ length: 10 }, (_, i) => work(`PAY-${100 + i}`)),
+      { ...work('PAY-120'), priority: 'Low', sprintId: '4' },
+      { ...work('PAY-121'), priority: 'Low', sprintId: '4' },
+      work('PAY-12'),
+      work('PAY-13'),
+    ];
+    const h = harness({ sprints: SPRINTS, commitments: commitments.filter((item) => !['PAY-12', 'PAY-13'].includes(item.key)) });
+    for (const row of store.contracts) {
+      await h.store.insertRequest({ ...row.request });
+      h.store.contracts.push({ ...row.contract });
+    }
+    h.deps.monitor.workAhead = (teamId, contractId) => providerWorkAhead(deps, teamId, contractId);
+    const renegotiationId = 'req-00000000-0000-4000-8000-0000000000f1';
+    deps.renegotiate = (trigger) => openRenegotiation(h.deps, trigger, renegotiationId);
+
+    // Two Highest-priority bugs in the active sprint.
+    commitments.push(
+      { ...work('PAY-200'), issueType: 'Bug', priority: 'Highest' },
+      { ...work('PAY-201'), issueType: 'Bug', priority: 'Highest' },
+    );
+    const risky = await monitorProviderTeam(deps, PAY.id);
+    expect(risky.renegotiations).toEqual([expect.objectContaining({ contractId: 2, status: 'opened' })]);
+    // One comment per issue: the risk and the opened renegotiation together.
+    expect(comments.map((c) => c.issueKey)).toEqual(['MOB-3', 'PAY-13']);
+    expect(comments[0].text).toContain('now at risk');
+    expect(comments[0].text).toContain('Accord opened a renegotiation');
+
+    await runRound1(h.deps, renegotiationId);
+    await runRound2(h.deps, renegotiationId);
+    const options = await h.store.listOptions(renegotiationId);
+    expect(options.length).toBeGreaterThanOrEqual(2);
+    // The monitor's comment already announced the renegotiation: round 2 adds no second one on MOB-3.
+    expect(h.jira.comments.filter((c) => c.issueKey === 'MOB-3' && c.text.includes('renegotiation'))).toEqual([]);
+    const projected = statusOf(2)?.projectedDate ?? '';
+    const broker = await h.store.getRound(renegotiationId, 2, 'broker');
+    const recommended = (broker?.output as { recommendedOptionId: number }).recommendedOptionId;
+    await decide(h.deps, { requestId: renegotiationId, optionId: recommended, side: 'requester', decision: 'approve', accountId: 'lead-mobile' });
+    await decide(h.deps, { requestId: renegotiationId, optionId: recommended, side: 'provider', decision: 'approve', accountId: 'lead-payments' });
+    expect((await applyContract(h.deps, renegotiationId)).status).toBe('done');
+    const applied = await h.store.getContract(renegotiationId);
+    const appliedRequest = await h.store.getRequest(renegotiationId);
+    if (!applied || !appliedRequest) throw new Error('renegotiated contract missing');
+
+    // The monitor now sees the new contract instead of the superseded one; the planner's shifts moved issues.
+    store.contracts[1].contract.status = 'superseded';
+    store.contracts.push({ contract: { ...applied }, request: appliedRequest });
+    store.baselines.set(renegotiationId, projected);
+    const moved = new Map(h.jira.sprintMoves.flatMap((move) => move.keys.map((key) => [key, move.sprintId] as const)));
+    const backlog = new Set(h.jira.backlogMoves.flat());
+    commitments = commitments
+      .filter((item) => !backlog.has(item.key))
+      .filter((item) => !moved.has(item.key) || ['2', '4'].includes(moved.get(item.key) ?? ''));
+    const after = await monitorProviderTeam(deps, PAY.id);
+    expect(after.evaluated.find((e) => e.contractId === applied.id)).toMatchObject({ to: 'on-track' });
+    expect(after.renegotiations).toEqual([]);
+    expect(comments).toHaveLength(2);
+    expect([...h.store.requests.values()].filter((r) => r.createdBy === APP_CREATOR)).toHaveLength(1);
+  });
+
+  it('holds an applied renegotiation at risk on the same projection and renegotiates once it gets worse', async () => {
+    const renegotiated = contractRow(3, 'PAY-13');
+    store.contracts = [contractRow(1, 'PAY-12'), { ...renegotiated, contract: { ...renegotiated.contract, agreedDateMin: '2026-11-28', agreedDateMax: '2026-11-28' } }];
+    store.baselines.set(renegotiated.request.id, '2026-12-12');
+    addBugs();
+    const held = await monitorProviderTeam(deps, PAY.id);
+    expect(held.evaluated[1]).toMatchObject({ contractId: 3, to: 'at-risk', projectedDate: '2026-12-12' });
+    expect(held.held).toEqual([3]);
+    expect(triggers).toEqual([]);
+    expect(comments).toEqual([]);
+    expect(store.auditLog.filter((e) => e.action === 'renegotiation-held')).toHaveLength(1);
+
+    // New data: the projection moves past the baseline.
+    commitments.push(...Array.from({ length: 9 }, (_, i) => work(`PAY-${400 + i}`)));
+    const worse = await monitorProviderTeam(deps, PAY.id);
+    expect(worse.held).toEqual([]);
+    // Contract 1 goes at risk on the same new data; contract 3 is renegotiated again.
+    expect(worse.renegotiations).toContainEqual(expect.objectContaining({ contractId: 3, status: 'opened' }));
+    expect(triggers.map((t) => t.contract.id)).toContain(3);
+    expect(comments.map((c) => c.issueKey)).toContain('MOB-4');
+  });
+
+  it('does not hold a renegotiated contract that was on track since apply: new data opens a renegotiation', async () => {
+    const renegotiated = contractRow(3, 'PAY-13');
+    store.contracts = [contractRow(1, 'PAY-12'), { ...renegotiated, contract: { ...renegotiated.contract, projectedDate: '2026-11-28' } }];
+    store.baselines.set(renegotiated.request.id, '2026-12-12');
+    addBugs();
+    const result = await monitorProviderTeam(deps, PAY.id);
+    expect(result.held).toEqual([]);
+    expect(result.renegotiations).toEqual([expect.objectContaining({ contractId: 3, status: 'opened' })]);
+  });
+
+  it('opens at most two renegotiations per run, nearest agreed date first, and the rest on the next run', async () => {
+    const dated = (id: number, agreed: string) => {
+      const row = contractRow(id, `PAY-${20 + id}`);
+      return { ...row, contract: { ...row.contract, agreedDateMin: agreed, agreedDateMax: agreed } };
+    };
+    store.contracts = [dated(1, '2026-11-27'), dated(2, '2026-11-13'), dated(3, '2026-11-20'), dated(4, '2026-11-10')];
+    commitments = Array.from({ length: 40 }, (_, i) => work(`PAY-${300 + i}`));
+    const openedFor = new Set<number>();
+    deps.renegotiate = async (trigger) => {
+      const exists = openedFor.has(trigger.contract.id);
+      openedFor.add(trigger.contract.id);
+      return { status: exists ? 'exists' : 'opened', requestId: `req-${trigger.contract.id}`, detail: '' };
+    };
+    const first = await monitorProviderTeam(deps, PAY.id);
+    expect(first.evaluated.every((e) => e.to === 'at-risk')).toBe(true);
+    expect(first.renegotiations.map((r) => [r.contractId, r.status])).toEqual([
+      [4, 'opened'],
+      [2, 'opened'],
+      [3, 'deferred'],
+      [1, 'deferred'],
+    ]);
+    const second = await monitorProviderTeam(deps, PAY.id);
+    expect(second.renegotiations.map((r) => [r.contractId, r.status])).toEqual([
+      [4, 'exists'],
+      [2, 'exists'],
+      [3, 'opened'],
+      [1, 'opened'],
+    ]);
+  });
+
+  it('does not renegotiate on-track contracts and keeps monitoring when the opener fails', async () => {
+    await monitorProviderTeam(deps, PAY.id);
+    expect(triggers).toEqual([]);
+    addBugs();
+    deps.renegotiate = async () => {
+      throw new Error('queue down');
+    };
+    const result = await monitorProviderTeam(deps, PAY.id);
+    expect(result.evaluated[1]).toMatchObject({ to: 'at-risk', changed: true });
+    expect(result.renegotiations).toEqual([expect.objectContaining({ contractId: 2, status: 'skipped' })]);
+    expect(store.auditLog.find((e) => e.action === 'renegotiation-failed')?.payload).toMatchObject({ error: 'queue down' });
+    expect(comments).toHaveLength(2);
+  });
+
+  it('ignores superseded contracts (FR-14)', async () => {
+    store.contracts[1].contract.status = 'superseded';
+    addBugs();
+    const result = await monitorProviderTeam(deps, PAY.id);
+    expect(result.evaluated.map((e) => e.contractId)).toEqual([1]);
+    expect(statusOf(2)?.status).toBe('superseded');
+    expect(triggers).toEqual([]);
   });
 
   it('returns to on-track when the bugs leave the sprint and comments once more', async () => {

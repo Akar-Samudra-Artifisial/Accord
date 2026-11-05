@@ -154,6 +154,17 @@ Plan:
 - Not reproduced: both agents (including Accord Broker) appear on the site, and the issue panel opens on
   ACMOB-1 through "View app actions" → Accord, the same way as on bayutrisnapati.
 
+## rovo:mcp module (M6, FR-18, 5.28.0)
+
+- Syntax from the Forge `rovo:mcp` reference (Preview): `key`, `name` (max 30 characters) and `tools` (action
+  keys); at most one module per app. Module `accord-mcp` lists `list-teams`, `get-request`, `list-contracts` and
+  `create-dependency-request`; no approve tool (NFR-2).
+- `forge lint` found no issues and `forge deploy -e development` accepted it as 5.28.0, a minor version. No new
+  scopes, so `forge install list` showed both installations (`d65f40bf`, `9780399c`) Up-to-date without
+  `forge install --upgrade`. No EAP flag was needed.
+- Not checked yet: calling the tools from a Rovo Studio custom agent and from an external client (an admin has to
+  enable the tools under Connected apps first).
+
 ## Open items
 
 - Browser check of the deal sheet, two approvals and apply-contract (deliverable issue, link, comments) on the site.

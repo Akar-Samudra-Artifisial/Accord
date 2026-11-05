@@ -1,18 +1,29 @@
 import { planOptions, isValidIsoDate, type CostClass, type PlannerInput, type PlannerOption, type PlannerVariation, type Size } from '../planner';
 import { UserFacingError } from '../errors';
 import type { JiraPermission } from '../jira/permissions';
-import { formatDateRange } from '../format/dates';
+import { formatDate, formatDateRange } from '../format/dates';
 import { plural } from '../format/text';
 import type { Team } from '../teams/repository';
 import {
   approvalState,
   isProjectedSprint,
+  KIND_LABEL,
   rankOptions,
   requesterDecision,
   type RequesterDecision,
   type Side,
 } from './delegates';
-import type { Contract, DependencyRequest, NegotiationDeps, PlanningContext, RequestStatus, StoredOption } from './types';
+import { APP_CREATOR } from './types';
+import type {
+  Contract,
+  DependencyRequest,
+  NegotiationDeps,
+  PlanningContext,
+  RenegotiationWorkAhead,
+  RequestStatus,
+  StoredOption,
+} from './types';
+import type { IsoDate } from '../planner';
 
 /**
  * Negotiation orchestration (FR-8..FR-10). Each round runs as its own queue job
@@ -21,8 +32,14 @@ import type { Contract, DependencyRequest, NegotiationDeps, PlanningContext, Req
  * approvals (NFR-2).
  */
 
+/** Why `createRequest` stored nothing (or stored a failed request), for callers that react differently. */
+export type CreateFailure = 'exists' | 'duplicate' | 'provider-limit' | 'enqueue-failed';
+
 export class NegotiationError extends UserFacingError {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly code?: CreateFailure,
+  ) {
     super(message);
     this.name = 'NegotiationError';
   }
@@ -125,9 +142,33 @@ export async function runRound1(deps: NegotiationDeps, requestId: string): Promi
   const request = await requireRequest(deps, requestId);
   if (request.status !== 'negotiating') return { status: 'skipped', detail: `request is ${request.status}` };
   const provider = await requireTeam(deps, request.providerTeamId);
+  // A renegotiation re-plans the deliverable of the contract at risk: it is neither work ahead of itself
+  // nor a candidate to shift, so it leaves the provider commitments.
+  const renegotiation = await deps.store.getRenegotiation(requestId);
+  const replanned = renegotiation ? ((await deps.store.getContract(renegotiation.parentRequestId))?.deliverableIssueKey ?? null) : null;
   // Jira/SQL planning data is loaded at most once per job and shared by both delegates.
   let planning: Promise<PlanningContext> | null = null;
-  const context = () => (planning ??= deps.teams.planningContext(provider, request.neededBy));
+  const context = () =>
+    (planning ??= deps.teams
+      .planningContext(provider, request.neededBy)
+      .then((loaded) => (replanned ? { ...loaded, commitments: loaded.commitments.filter((item) => item.key !== replanned) } : loaded)));
+  // A renegotiation plans with the monitor's projection (NFR-1): its options are never dates the monitor
+  // already projects as missed, so an applied renegotiation is not at risk again on the same data.
+  let ahead: Promise<RenegotiationWorkAhead | null> | null = null;
+  const workAhead = () => (ahead ??= renegotiation ? deps.monitor.workAhead(provider.id, renegotiation.contractId) : Promise.resolve(null));
+  const input = async (variation?: PlannerVariation) => {
+    const found = await workAhead();
+    const base = plannerInput(deps, request, await context(), variation);
+    return found
+      ? { ...base, workAhead: { issues: found.issues, countedKeys: found.countedKeys, countedSprintIds: found.countedSprintIds, pinnedKeys: found.pinnedKeys } }
+      : base;
+  };
+  const aheadSummary = async () => {
+    const found = await workAhead();
+    if (!found) return {};
+    const { issues, committedIssues, contractIssues, criticalBugs, pessimistic } = found;
+    return { workAhead: { issues, committedIssues, contractIssues, criticalBugs, pessimistic } };
+  };
 
   const providerRound = await deps.store.getRound(requestId, 1, 'provider-delegate');
   let offers: StoredOption[];
@@ -136,9 +177,9 @@ export async function runRound1(deps: NegotiationDeps, requestId: string): Promi
   } else {
     let stored: StoredOption[] = [];
     await runRound(deps, requestId, 1, 'provider-delegate', { neededBy: request.neededBy }, async (roundId) => {
-      const input = plannerInput(deps, request, await context());
-      stored = await deps.store.replaceOptions(requestId, roundId, planOptions(input).options.map(toStoredDraft));
-      return { planner: inputSummary(input), optionIds: stored.map((option) => option.id) };
+      const planned = await input();
+      stored = await deps.store.replaceOptions(requestId, roundId, planOptions(planned).options.map(toStoredDraft));
+      return { planner: inputSummary(planned), ...(await aheadSummary()), optionIds: stored.map((option) => option.id) };
     });
     offers = stored;
     await deps.store.audit('request', requestId, 'options-proposed', null, {
@@ -153,8 +194,7 @@ export async function runRound1(deps: NegotiationDeps, requestId: string): Promi
     const decision = requesterDecision(request, offers);
     await runRound(deps, requestId, 1, 'requester-delegate', { offerIds: offers.map((o) => o.id) }, async (roundId) => {
       if (decision.action === 'request-variation') {
-        const input = plannerInput(deps, request, await context(), decision.variation);
-        const result = planOptions(input);
+        const result = planOptions(await input(decision.variation));
         const stored = await deps.store.replaceOptions(requestId, roundId, result.options.map(toStoredDraft));
         return { decision, variationOptionIds: stored.map((option) => option.id) };
       }
@@ -187,19 +227,26 @@ export async function runRound2(deps: NegotiationDeps, requestId: string): Promi
     const ranked = rankOptions(await deps.store.listOptions(requestId));
     if (ranked.length === 0) throw new NegotiationError(`No options stored for ${requestId}`);
     const recommended = ranked[0];
+    const renegotiation = await deps.store.getRenegotiation(requestId);
     output = await runRound(deps, requestId, 2, 'broker', { optionCount: ranked.length }, async () => {
       await deps.store.setRecommended(requestId, recommended.id);
+      const recommendedDates = formatDateRange(recommended.dateRange.min, recommended.dateRange.max, 'no date offered');
       // Only the source issue is commented: its creator was checked for ADD_COMMENTS there. Provider issues
       // the option would shift are not commented, because the requester has no permission on them (NFR-3);
-      // the provider lead sees them in the deal sheet and Inbox.
+      // the provider lead sees them in the deal sheet and Inbox. A renegotiation gets this one comment
+      // ("renegotiation opened"); the risk itself was already announced by the monitor.
       await commentOnce(
         deps,
         requestId,
-        `comment:deal-sheet:${request.sourceIssueKey}`,
+        renegotiation ? renegotiationCommentStep(request.sourceIssueKey) : `comment:deal-sheet:${request.sourceIssueKey}`,
         request.sourceIssueKey,
-        `Accord: the deal sheet for ${quotedTitle(request.title)} (${provider.name}) is ready with ${plural(ranked.length, 'option')}. ` +
-          `Recommended delivery: ${formatDateRange(recommended.dateRange.min, recommended.dateRange.max, 'no date offered')}. ` +
-          'Nothing changes in Jira until both team leads approve the same option in the Accord panel.',
+        renegotiation
+          ? `Accord: the contract for ${quotedTitle(request.title)} (${provider.name}) is at risk, so Accord opened a renegotiation. ` +
+              `The new deal sheet has ${plural(ranked.length, 'option')}; recommended delivery: ${recommendedDates}. ` +
+              'The current contract stays in effect until both team leads approve a new option in the Accord panel.'
+          : `Accord: the deal sheet for ${quotedTitle(request.title)} (${provider.name}) is ready with ${plural(ranked.length, 'option')}. ` +
+              `Recommended delivery: ${recommendedDates}. ` +
+              'Nothing changes in Jira until both team leads approve the same option in the Accord panel.',
       );
       return { rankedOptionIds: ranked.map((option) => option.id), recommendedOptionId: recommended.id };
     });
@@ -347,6 +394,7 @@ export async function decide(deps: NegotiationDeps, input: DecisionInput): Promi
     }
     await deps.store.addApproval(approval, 'rejected');
     await deps.store.audit('request', request.id, 'rejected', input.accountId, { optionId: input.optionId, teamId, side: input.side, reason });
+    await escalateSafely(deps, request.id, 'rejected');
     return { status: 'rejected', detail: reason };
   }
 
@@ -423,6 +471,25 @@ async function ensureDeliverable(deps: NegotiationDeps, request: DependencyReque
   return deliverable;
 }
 
+const DUE_DATE_STEP = 'contract:due-date';
+
+/** Renegotiated contract: points at the replaced contract's deliverable and moves its due date (once). */
+async function reuseDeliverable(
+  deps: NegotiationDeps,
+  request: DependencyRequest,
+  contract: Contract,
+  issueKey: string,
+  dueDate: IsoDate,
+  actor: Record<string, unknown>,
+): Promise<string> {
+  if (contract.deliverableIssueKey !== issueKey) await deps.store.setContractDeliverable(request.id, issueKey);
+  if (!(await deps.store.hasStep(request.id, DUE_DATE_STEP))) {
+    await deps.jira.setDueDate(issueKey, dueDate);
+    await deps.store.audit('request', request.id, DUE_DATE_STEP, null, { issueKey, dueDate, ...actor });
+  }
+  return issueKey;
+}
+
 /** Writes the agreement to Jira and SQL. Every step is guarded, so a retry never duplicates (NFR-5, NFR-7). */
 export async function applyContract(deps: NegotiationDeps, requestId: string): Promise<RoundResult> {
   const request = await requireRequest(deps, requestId);
@@ -439,8 +506,13 @@ export async function applyContract(deps: NegotiationDeps, requestId: string): P
   const state = approvalState(await deps.store.listApprovals(requestId), request.requesterTeamId, request.providerTeamId);
   const actor = { as: 'app', reason: APP_ACTOR_REASON, approvedBy: [state.requester?.actorAccountId, state.provider?.actorAccountId] };
   const dates = { min: contract.agreedDateMin, max: contract.agreedDateMax };
+  const renegotiation = await deps.store.getRenegotiation(requestId);
+  const parentContract = renegotiation ? await deps.store.getContract(renegotiation.parentRequestId) : null;
 
-  const deliverable = await ensureDeliverable(deps, request, provider, contract, dates.max);
+  // A renegotiation keeps the deliverable of the contract it replaces and only moves its due date.
+  const deliverable = parentContract?.deliverableIssueKey
+    ? await reuseDeliverable(deps, request, contract, parentContract.deliverableIssueKey, dates.max, actor)
+    : await ensureDeliverable(deps, request, provider, contract, dates.max);
 
   if (!(await deps.jira.hasBlocksLink(deliverable, request.sourceIssueKey))) {
     await deps.jira.linkBlocks(deliverable, request.sourceIssueKey);
@@ -467,13 +539,14 @@ export async function applyContract(deps: NegotiationDeps, requestId: string): P
   }
 
   const agreed = formatDateRange(dates.min, dates.max);
+  const replaces = parentContract ? ` This replaces the earlier agreement (${formatDateRange(parentContract.agreedDateMin, parentContract.agreedDateMax)}).` : '';
   await commentOnce(
     deps,
     requestId,
     `comment:contract:${request.sourceIssueKey}`,
     request.sourceIssueKey,
     `Accord contract: ${provider.name} delivers ${quotedTitle(request.title)} as ${deliverable}, agreed ${agreed}. ` +
-      `Approved by the ${requester.name} and ${provider.name} leads.`,
+      `Approved by the ${requester.name} and ${provider.name} leads.${replaces}`,
   );
   await commentOnce(
     deps,
@@ -481,10 +554,20 @@ export async function applyContract(deps: NegotiationDeps, requestId: string): P
     `comment:contract:${deliverable}`,
     deliverable,
     `Accord contract with ${requester.name} (${request.sourceIssueKey}): agreed delivery ${agreed}.` +
-      (option.shifted.length ? ` Moved to make room: ${option.shifted.map((item) => item.key).join(', ')}.` : ''),
+      (option.shifted.length ? ` Moved to make room: ${option.shifted.map((item) => item.key).join(', ')}.` : '') +
+      replaces,
   );
 
   await deps.store.ensureEdge(contract.id, request.requesterTeamId, request.providerTeamId);
+  if (renegotiation && parentContract && parentContract.status !== 'superseded') {
+    // Kept for history, no longer monitored (the monitor's conditional update loses against this change).
+    await deps.store.setContractStatus(renegotiation.parentRequestId, 'superseded');
+    await deps.store.audit('contract', String(parentContract.id), 'contract-superseded', null, {
+      supersededByRequestId: requestId,
+      supersededByContractId: contract.id,
+      ...actor,
+    });
+  }
   await deps.store.setContractStatus(requestId, 'on-track');
   if (await deps.store.transition(requestId, ['approved'], 'contracted')) {
     await deps.store.audit('contract', String(contract.id), 'contract-applied', null, {
@@ -554,7 +637,11 @@ export interface NewRequestInput {
   minSize: number | null;
   neededBy: string;
   costClass: CostClass;
+  /** Account id of the creator, or APP_CREATOR for requests Accord opens itself. */
   createdBy: string;
+  /** Renegotiation (FR-14): the contracted request it renegotiates, and why it was opened. */
+  parentRequestId?: string;
+  note?: string;
 }
 
 const SIZES: readonly Size[] = ['S', 'M', 'L'];
@@ -617,22 +704,28 @@ export async function createRequest(deps: NegotiationDeps, input: NewRequestInpu
     createdAt: new Date().toISOString(),
   };
   const inserted = await deps.store.insertRequest(request, { maxPerProviderPerHour: MAX_REQUESTS_PER_PROVIDER_PER_HOUR });
+  if (inserted === 'exists') throw new NegotiationError('This request was already created.', 'exists');
   if (inserted === 'duplicate') {
     throw new NegotiationError(
       `${request.sourceIssueKey} already has an open request to ${input.providerTeam.name}. Open its deal sheet instead of creating another one.`,
+      'duplicate',
     );
   }
   if (inserted === 'provider-limit') {
     throw new NegotiationError(
       `${input.providerTeam.name} received ${MAX_REQUESTS_PER_PROVIDER_PER_HOUR} requests in the last hour. Try again later.`,
+      'provider-limit',
     );
   }
-  await deps.store.audit('request', id, 'created', input.createdBy, {
+  const byApp = input.createdBy === APP_CREATOR;
+  await deps.store.audit('request', id, 'created', byApp ? null : input.createdBy, {
     sourceIssueKey: request.sourceIssueKey,
     provider: input.providerTeam.teamKey,
     size: request.size,
     minSize: request.minSize,
     neededBy: request.neededBy,
+    ...(input.parentRequestId ? { parentRequestId: input.parentRequestId, note: input.note ?? null } : {}),
+    ...(byApp ? { as: 'app' } : {}),
   });
   try {
     await deps.queue.push({ type: 'round1', requestId: id });
@@ -640,7 +733,294 @@ export async function createRequest(deps: NegotiationDeps, input: NewRequestInpu
     const message = pushError instanceof Error ? pushError.message : String(pushError);
     await deps.store.transition(id, ['negotiating'], 'failed');
     await deps.store.audit('request', id, 'round1-enqueue-failed', null, { error: message.slice(0, 1000) });
-    throw new NegotiationError('The request was saved but the negotiation could not be started, so it is marked failed. Use "Retry negotiation".');
+    throw new NegotiationError(
+      'The request was saved but the negotiation could not be started, so it is marked failed. Use "Retry negotiation".',
+      'enqueue-failed',
+    );
   }
   return request;
+}
+
+const RENEGOTIATION_REASON = 'Contract monitor without a user context; opens the renegotiation as the app (FR-14).';
+
+/** An at-risk evaluation of the monitor, as input for a renegotiation. */
+export interface RenegotiationTrigger {
+  contract: Contract;
+  /** The contracted request of `contract`. */
+  request: DependencyRequest;
+  projectedDate: IsoDate | null;
+  /** Notification sequence of the at-risk announcement: one renegotiation per contract and episode. */
+  episode: number;
+  /**
+   * The monitor's at-risk comment on the source issue (posted right after) also announces this renegotiation,
+   * so round 2 does not comment on the source issue a second time.
+   */
+  announcedByMonitor?: boolean;
+}
+
+/** Marker of the one "renegotiation opened" comment on the source issue (written by round 2 or the monitor). */
+const renegotiationCommentStep = (sourceIssueKey: string) => `comment:renegotiation:${sourceIssueKey}`;
+
+export type RenegotiationResult = { status: 'opened' | 'exists' | 'skipped'; requestId: string | null; detail: string };
+
+/**
+ * Opens a renegotiation for an at-risk contract (FR-14): a new request between the same teams, created by the
+ * app and negotiated by the same rounds and planner. Idempotent: an open renegotiation of the contract, or one
+ * already opened for this at-risk episode, is returned instead of opening another. The claim row is written
+ * before the request, so a crash in between reuses the claimed id on the next monitor run.
+ */
+export async function openRenegotiation(deps: NegotiationDeps, trigger: RenegotiationTrigger, newId: string): Promise<RenegotiationResult> {
+  const { contract, request: parent } = trigger;
+  const open = await deps.store.openRenegotiationFor(contract.id);
+  if (open) return { status: 'exists', requestId: open, detail: 'a renegotiation of this contract is already open' };
+  const requestId = await deps.store.claimRenegotiation({
+    requestId: newId,
+    parentRequestId: parent.id,
+    contractId: contract.id,
+    episode: trigger.episode,
+  });
+  if (await deps.store.getRequest(requestId)) return { status: 'exists', requestId, detail: 'already opened for this at-risk change' };
+
+  const [requesterTeam, providerTeam] = await Promise.all([
+    requireTeam(deps, parent.requesterTeamId),
+    requireTeam(deps, parent.providerTeamId),
+  ]);
+  const today = deps.today();
+  // The requester's need date stands; once it has passed, the agreed date is the target.
+  const neededBy = [parent.neededBy, contract.agreedDateMax].find((date) => date > today) ?? null;
+  const subject = `${contract.deliverableIssueKey ?? `contract ${contract.id}`} → ${parent.sourceIssueKey}`;
+  const note = `Renegotiation: contract ${subject} at risk; projected finish ${formatDate(trigger.projectedDate, 'beyond the planning horizon')}`;
+  const actor = { as: 'app', reason: RENEGOTIATION_REASON };
+  if (!neededBy) {
+    await deps.store.audit('request', parent.id, 'renegotiation-skipped', null, {
+      contractId: contract.id,
+      detail: 'need date and agreed date have both passed',
+      ...actor,
+    });
+    return { status: 'skipped', requestId: null, detail: 'need date and agreed date have passed' };
+  }
+  if (trigger.announcedByMonitor && !(await deps.store.hasStep(requestId, renegotiationCommentStep(parent.sourceIssueKey)))) {
+    // Written before round 1 is queued, so round 2 never races the monitor's combined comment.
+    await deps.store.audit('request', requestId, renegotiationCommentStep(parent.sourceIssueKey), null, {
+      issueKey: parent.sourceIssueKey,
+      via: 'monitor',
+      ...actor,
+    });
+  }
+  try {
+    await createRequest(
+      deps,
+      {
+        sourceIssueKey: parent.sourceIssueKey,
+        requesterTeam,
+        providerTeam,
+        title: parent.title,
+        size: parent.size,
+        minSize: parent.minSize,
+        neededBy,
+        costClass: parent.costClass,
+        createdBy: APP_CREATOR,
+        parentRequestId: parent.id,
+        note,
+      },
+      requestId,
+    );
+  } catch (error) {
+    const code = error instanceof NegotiationError ? error.code : undefined;
+    // A parallel monitor run stored the same claimed request first: not a failure.
+    if (code === 'exists') return { status: 'exists', requestId, detail: 'opened by a parallel monitor run' };
+    // Nothing stored (provider limit, duplicate, transient error): free the episode so a later run retries it.
+    // An enqueue failure stored the request as failed; it keeps its claim and is retried from the UI.
+    if (code !== 'enqueue-failed') await deps.store.releaseRenegotiation(requestId);
+    if (code === 'duplicate') {
+      return { status: 'exists', requestId: null, detail: 'the source issue already has an open request to this team' };
+    }
+    if (!(error instanceof NegotiationError)) throw error;
+    await deps.store.audit('request', parent.id, 'renegotiation-failed', null, {
+      contractId: contract.id,
+      episode: trigger.episode,
+      retried: code !== 'enqueue-failed',
+      error: error.message.slice(0, 500),
+    });
+    return { status: 'skipped', requestId: null, detail: error.message };
+  }
+  await deps.store.audit('request', requestId, 'renegotiation-opened', null, {
+    parentRequestId: parent.id,
+    contractId: contract.id,
+    episode: trigger.episode,
+    projectedDate: trigger.projectedDate,
+    agreedDateMax: contract.agreedDateMax,
+    note,
+    ...actor,
+  });
+  return { status: 'opened', requestId, detail: note };
+}
+
+/**
+ * Withdraws the renegotiations of a provider that nobody decided yet (demo reset): status `cancelled`,
+ * audited, nothing deleted. Approved or contracted renegotiations stay untouched.
+ */
+export async function cancelUndecidedRenegotiations(
+  deps: NegotiationDeps,
+  providerTeamId: string,
+  actor: string | null,
+  reason: string,
+): Promise<string[]> {
+  const cancelled: string[] = [];
+  for (const requestId of await deps.store.undecidedRenegotiations(providerTeamId)) {
+    if (!(await deps.store.transition(requestId, ['negotiating', 'awaiting-approval'], 'cancelled'))) continue;
+    await deps.store.audit('request', requestId, 'cancelled', actor, { reason });
+    cancelled.push(requestId);
+  }
+  return cancelled;
+}
+
+export const ESCALATED_STEP = 'escalated';
+export const ESCALATION_FAILED_STEP = 'escalation-failed';
+export type EscalationTrigger = 'rejected' | 'failed';
+const ESCALATION_REASON = 'Request ended without agreement; Accord posts the neutral escalation summary as the app (FR-15).';
+
+/** User text in a comment: one line, no control characters, bounded. */
+const oneLine = (value: string, max: number) => value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+
+/** Neutral summary: both teams, the trigger, and the stored numbers (need date, options, contract dates). */
+async function escalationSummary(
+  deps: NegotiationDeps,
+  request: DependencyRequest,
+  requester: Team,
+  provider: Team,
+  trigger: EscalationTrigger,
+): Promise<string> {
+  const lines = [
+    `Accord escalation: ${requester.name} and ${provider.name} reached no agreement on ${quotedTitle(request.title)} (${request.sourceIssueKey}).`,
+  ];
+  if (trigger === 'rejected') {
+    const rejection = (await deps.store.listApprovals(request.id)).find((approval) => approval.decision === 'reject');
+    if (rejection) {
+      const team = rejection.teamId === requester.id ? requester : provider;
+      const reason = rejection.reason ? oneLine(rejection.reason, 300) : '';
+      lines.push(`The ${team.name} lead rejected the deal sheet.${reason ? ` Reason given: "${reason.replace(/"/g, "'")}".` : ''}`);
+    } else {
+      // No stored rejection (e.g. removed data): do not guess which team rejected.
+      lines.push('The deal sheet was rejected.');
+    }
+  } else {
+    lines.push('Accord could not finish the negotiation: a background step failed after several attempts.');
+  }
+  lines.push(`Needed by ${formatDate(request.neededBy)}; size ${request.size}.`);
+  const renegotiation = await deps.store.getRenegotiation(request.id);
+  const parentContract = renegotiation ? await deps.store.getContract(renegotiation.parentRequestId) : null;
+  if (parentContract) {
+    lines.push(
+      `This was a renegotiation of the contract agreed ${formatDateRange(parentContract.agreedDateMin, parentContract.agreedDateMax)}, ` +
+        `projected for ${formatDate(parentContract.projectedDate, 'beyond the planning horizon')}; that contract stays in effect.`,
+    );
+  }
+  const broker = await deps.store.getRound(request.id, 2, 'broker');
+  const rankedIds = (broker?.output as { rankedOptionIds?: number[] } | null)?.rankedOptionIds ?? [];
+  const options = await deps.store.listOptions(request.id);
+  const ranked = rankedIds.map((id) => options.find((option) => option.id === id)).filter((option): option is StoredOption => Boolean(option));
+  if (ranked.length > 0) {
+    const listed = ranked.map((option) => `${KIND_LABEL[option.kind]} (${formatDateRange(option.dateRange.min, option.dateRange.max, 'no date')})`);
+    lines.push(`Options on the deal sheet: ${listed.join('; ')}.`);
+  }
+  lines.push('Please help both team leads decide. Nothing changes in Jira until both approve the same option in Accord.');
+  return lines.join('\n');
+}
+
+/**
+ * Escalates a rejected or failed request (FR-15) to the escalation contact of each team's charter, falling back
+ * to the Jira project lead: one neutral comment with mentions on the source issue. At most once per request:
+ * the `escalated` marker (with the contacts) is written after the comment was posted; a failed comment is
+ * audited as `escalation-failed` and retried by `retryEscalations`.
+ */
+export async function escalate(deps: NegotiationDeps, requestId: string, trigger: EscalationTrigger): Promise<RoundResult> {
+  if (await deps.store.hasStep(requestId, ESCALATED_STEP)) return { status: 'skipped', detail: 'already escalated' };
+  const request = await requireRequest(deps, requestId);
+  if (request.status !== 'rejected' && request.status !== 'failed') return { status: 'skipped', detail: `request is ${request.status}` };
+  const teams = await Promise.all([requireTeam(deps, request.requesterTeamId), requireTeam(deps, request.providerTeamId)]);
+  const [requester, provider] = teams;
+  const found = await Promise.all(
+    teams.map(async (team) => ({ team, contact: await deps.teams.escalationContact(team, request.sourceIssueKey) })),
+  );
+  for (const { team, contact } of found) {
+    if (contact?.note) {
+      await deps.store.audit('request', requestId, 'escalation-contact-fallback', null, {
+        teamKey: team.teamKey,
+        fallback: contact.source,
+        note: contact.note,
+      });
+    }
+  }
+  // One shared contact of both teams is mentioned once.
+  const unique = found
+    .flatMap(({ team, contact }) => (contact ? [{ team, contact }] : []))
+    .filter((item, index, all) => all.findIndex((other) => other.contact.accountId === item.contact.accountId) === index);
+  if (unique.length === 0) {
+    await deps.store.audit('request', requestId, 'escalation-skipped', null, { trigger, detail: 'no escalation contact or project lead' });
+    return { status: 'skipped', detail: 'no escalation contact' };
+  }
+  const contacts = await Promise.all(
+    unique.map(async ({ team, contact }) => ({
+      accountId: contact.accountId,
+      source: contact.source,
+      ...(contact.note ? { note: contact.note } : {}),
+      teamKey: team.teamKey,
+      name: (await deps.jira.displayName(contact.accountId)) ?? `the ${team.name} escalation contact`,
+    })),
+  );
+  const text = await escalationSummary(deps, request, requester, provider, trigger);
+  try {
+    await deps.jira.addComment(request.sourceIssueKey, text, contacts.map((contact) => contact.accountId));
+  } catch (error) {
+    // No `escalated` marker: no "Escalated" badge, and retryEscalations tries again on the next monitor run.
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Accord escalation comment for ${requestId} failed`, message);
+    await deps.store.audit('request', requestId, ESCALATION_FAILED_STEP, null, {
+      trigger,
+      issueKey: request.sourceIssueKey,
+      error: message.slice(0, 500),
+    });
+    return { status: 'skipped', detail: `escalation comment failed: ${message.slice(0, 200)}` };
+  }
+  // Written only after the comment is posted; it is the idempotency marker and feeds the "Escalated" badge.
+  await deps.store.audit('request', requestId, ESCALATED_STEP, null, {
+    trigger,
+    issueKey: request.sourceIssueKey,
+    contacts,
+    as: 'app',
+    reason: ESCALATION_REASON,
+  });
+  return { status: 'done', detail: `escalated to ${contacts.map((contact) => contact.name).join(', ')}` };
+}
+
+/**
+ * Retries escalations whose comment failed (FR-15): requests still rejected or failed, with an
+ * `escalation-failed` entry and no `escalated` marker. Called from every monitor schedule run.
+ */
+export async function retryEscalations(deps: NegotiationDeps, requestIds: readonly string[]): Promise<Array<RoundResult & { requestId: string }>> {
+  const results: Array<RoundResult & { requestId: string }> = [];
+  for (const requestId of requestIds) {
+    const request = await deps.store.getRequest(requestId);
+    if (!request || (request.status !== 'rejected' && request.status !== 'failed')) continue;
+    try {
+      results.push({ requestId, ...(await escalate(deps, requestId, request.status)) });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await deps.store.audit('request', requestId, ESCALATION_FAILED_STEP, null, { trigger: request.status, error: message.slice(0, 500) });
+      results.push({ requestId, status: 'skipped', detail: message.slice(0, 200) });
+    }
+  }
+  return results;
+}
+
+/** Escalation never undoes the decision or failure that triggered it: errors are audited, not thrown. */
+export async function escalateSafely(deps: NegotiationDeps, requestId: string, trigger: EscalationTrigger): Promise<void> {
+  try {
+    await escalate(deps, requestId, trigger);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Accord escalation for ${requestId} failed`, message);
+    await deps.store.audit('request', requestId, ESCALATION_FAILED_STEP, null, { trigger, error: message.slice(0, 500) });
+  }
 }

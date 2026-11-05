@@ -218,6 +218,39 @@ export const MIGRATIONS: ReadonlyArray<{ name: string; statement: string }> = [
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`,
   },
+  {
+    // Renegotiations of at-risk contracts (FR-14). The unique key allows one renegotiation per contract and
+    // at-risk episode (monitor notification seq), so repeated monitor runs never open a second one.
+    name: 'v018_create_renegotiations',
+    statement: `CREATE TABLE IF NOT EXISTS renegotiations (
+      request_id VARCHAR(64) PRIMARY KEY,
+      parent_request_id VARCHAR(64) NOT NULL,
+      contract_id BIGINT NOT NULL,
+      episode INT NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_renegotiation_episode (contract_id, episode),
+      INDEX idx_renegotiations_parent (parent_request_id)
+    )`,
+  },
+  {
+    // Request suggestions from Jira "blocks" links between two Accord teams (FR-16). One row per issue pair,
+    // so a repeated or re-created link never adds a second suggestion; nothing is created automatically (US-3).
+    name: 'v019_create_link_suggestions',
+    statement: `CREATE TABLE IF NOT EXISTS link_suggestions (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      blocked_issue_key VARCHAR(32) NOT NULL,
+      blocker_issue_key VARCHAR(32) NOT NULL,
+      requester_team_id VARCHAR(64) NOT NULL,
+      provider_team_id VARCHAR(64) NOT NULL,
+      link_id VARCHAR(32) NULL,
+      status VARCHAR(16) NOT NULL DEFAULT 'open',
+      request_id VARCHAR(64) NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_link_suggestion_pair (blocked_issue_key, blocker_issue_key),
+      INDEX idx_link_suggestions_blocked (blocked_issue_key, status)
+    )`,
+  },
 ];
 
 /** Applies pending migrations; safe to call on every cold start. */

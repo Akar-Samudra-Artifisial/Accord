@@ -151,6 +151,17 @@ export async function addComment(issueKey: string, text: string, mentions: reado
   return response.id;
 }
 
+/** Sets the due date of an existing issue (as the app). */
+export async function updateDueDate(issueKey: string, dueDate: string): Promise<void> {
+  await jira(route`/rest/api/3/issue/${issueKey}`, { method: 'PUT', body: { fields: { duedate: dueDate } } });
+}
+
+/** Display name of an Atlassian account (as the app, scope read:jira-user). */
+export async function userDisplayName(accountId: string): Promise<string | null> {
+  const user = await jira<{ displayName?: string }>(route`/rest/api/3/user?accountId=${accountId}`);
+  return user.displayName?.trim() || null;
+}
+
 export interface IssueLink {
   id?: string;
   type: { name: string; inward?: string; outward?: string };

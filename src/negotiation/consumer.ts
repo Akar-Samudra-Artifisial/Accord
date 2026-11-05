@@ -1,6 +1,6 @@
 import { InvocationError, InvocationErrorCode, type AsyncEvent } from '@forge/events';
 import { productionDeps } from './deps';
-import { applyContract, runRound1, runRound2, type RoundResult } from './orchestrator';
+import { applyContract, escalateSafely, runRound1, runRound2, type RoundResult } from './orchestrator';
 import type { NegotiationDeps, NegotiationEvent } from './types';
 
 /**
@@ -39,6 +39,8 @@ export async function handleNegotiationEvent(
       const from = event.type === 'apply-contract' ? (['approved'] as const) : (['negotiating'] as const);
       await deps.store.transition(event.requestId, from, 'failed');
       await deps.store.audit('request', event.requestId, `${event.type}-failed`, null, { error: message.slice(0, 1000) });
+      // FR-15: no agreement is possible without help; escalate() only acts while the request is failed.
+      await escalateSafely(deps, event.requestId, 'failed');
       return { status: 'skipped', detail: `gave up: ${message}` };
     }
     // Every step is idempotent, so the platform may simply run the job again.
