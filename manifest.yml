@@ -6,7 +6,7 @@ modules:
         function: resolver
       render: native
       title: Accord
-      icon: https://developer.atlassian.com/platform/forge/images/icons/issue-panel-icon.svg
+      icon: resource:icons;accord.svg
   jira:globalPage:
     - key: accord-home
       resource: home
@@ -14,6 +14,7 @@ modules:
         function: resolver
       render: native
       title: Accord
+      icon: resource:icons;accord.svg
   confluence:contentBylineItem:
     - key: accord-charter-byline
       resource: byline
@@ -22,6 +23,7 @@ modules:
       render: native
       title: Accord charter
       tooltip: Check whether this page is a valid Accord team charter
+      icon: resource:icons;accord.svg
   consumer:
     - key: accord-negotiation-consumer
       queue: accord-negotiation
@@ -52,6 +54,7 @@ modules:
   rovo:agent:
     - key: accord-team-delegate
       name: Accord Team Delegate
+      icon: resource:icons;accord.svg
       description: Represents one team in a dependency negotiation, using only the
         team's charter and the numbers produced by the Accord planner.
       prompt: >
@@ -124,6 +127,7 @@ modules:
         - create-dependency-request
     - key: accord-broker
       name: Accord Broker
+      icon: resource:icons;accord.svg
       description: Neutral broker that turns planner options into a deal sheet with
         one recommendation and alternatives for both team leads.
       prompt: >
@@ -350,8 +354,12 @@ resources:
     path: src/frontend/home.tsx
   - key: byline
     path: src/frontend/byline.tsx
+  # Static icon files (SVG source plus PNG exports for the developer console).
+  - key: icons
+    path: assets/icon
 app:
   id: ari:cloud:ecosystem::app/b3ad0126-cc44-4b56-94d0-dc7e24ba391e
+  description: Negotiate cross-team dependencies with real sprint capacity and keep the agreed contract on track.
   # One installation (one Forge SQL database, one copy of each Rovo agent) shared by Jira and Confluence.
   compatibility:
     jira:
