@@ -9,7 +9,15 @@ import {
   type NotificationState,
 } from '../../src/monitor/monitor';
 import { APP_CREATOR, type ContractStatus } from '../../src/negotiation/types';
-import { applyContract, decide, openRenegotiation, runRound1, runRound2, type RenegotiationTrigger } from '../../src/negotiation/orchestrator';
+import {
+  applyContract,
+  cancelRenegotiationsBackOnTrack,
+  decide,
+  openRenegotiation,
+  runRound1,
+  runRound2,
+  type RenegotiationTrigger,
+} from '../../src/negotiation/orchestrator';
 import { projectContract, type Sprint, type WorkItem } from '../../src/planner';
 import { MOB, PAY, harness, request } from '../negotiation/fakes';
 
@@ -120,6 +128,7 @@ describe('monitorProviderTeam', () => {
         triggers.push(trigger);
         return { status: 'opened', requestId: 'req-renegotiation', detail: '' };
       },
+      cancelRenegotiations: async () => ({ cancelled: [], announced: false }),
     };
     triggers = [];
   });
@@ -346,6 +355,70 @@ describe('monitorProviderTeam', () => {
     expect(comments[2].text).toContain('back on track');
     await monitorProviderTeam(deps, PAY.id);
     expect(comments).toHaveLength(4);
+  });
+
+  it('cancels the undecided renegotiation once the contract is back on track, naming a lead that already approved', async () => {
+    const h = harness();
+    const parent = store.contracts[1];
+    await h.store.insertRequest({ ...parent.request });
+    h.store.contracts.push({ ...parent.contract });
+    const renegotiationId = 'req-00000000-0000-4000-8000-0000000000c1';
+    deps.renegotiate = (trigger) => openRenegotiation(h.deps, trigger, renegotiationId);
+    deps.cancelRenegotiations = (contract, parentRequest) => cancelRenegotiationsBackOnTrack(h.deps, parentRequest, contract.id);
+    addBugs();
+    await monitorProviderTeam(deps, PAY.id);
+    // The requester lead already approved an option; the provider has not decided yet.
+    await h.store.transition(renegotiationId, ['negotiating'], 'awaiting-approval');
+    h.store.approvals.push({
+      id: 99,
+      requestId: renegotiationId,
+      optionId: 1,
+      teamId: MOB.id,
+      actorAccountId: 'lead-mobile',
+      decision: 'approve',
+      reason: null,
+      createdAt: '',
+    });
+
+    removeBugs();
+    const result = await monitorProviderTeam(deps, PAY.id);
+    expect(result.cancelledRenegotiations).toEqual([renegotiationId]);
+    expect((await h.store.getRequest(renegotiationId))?.status).toBe('cancelled');
+    const audit = h.store.auditLog.filter((e) => e.action === 'renegotiation-cancelled');
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({ entityId: renegotiationId, actor: null });
+    expect(audit[0].payload).toMatchObject({
+      reason: 'Contract back on track',
+      as: 'app',
+      contractId: 2,
+      approvedBy: [{ teamId: MOB.id, accountId: 'lead-mobile', name: 'Mia Mobile' }],
+    });
+    // No extra comment: the on-track comment on the source issue says it in one sentence; the deliverable stays plain.
+    expect(comments.map((c) => c.issueKey)).toEqual(['MOB-3', 'PAY-13', 'MOB-3', 'PAY-13']);
+    expect(comments[2].text).toContain('back on track');
+    expect(comments[2].text).toContain('renegotiation is no longer needed and was cancelled');
+    expect(comments[3].text).not.toContain('renegotiation');
+
+    const again = await monitorProviderTeam(deps, PAY.id);
+    expect(again.cancelledRenegotiations).toEqual([]);
+    expect(comments).toHaveLength(4);
+    expect(h.store.auditLog.filter((e) => e.action === 'renegotiation-cancelled')).toHaveLength(1);
+  });
+
+  it('keeps a renegotiation both leads approved, and does not mention an unannounced one', async () => {
+    const h = harness();
+    const parent = store.contracts[1];
+    await h.store.insertRequest({ ...parent.request });
+    const approved = 'req-00000000-0000-4000-8000-0000000000c2';
+    const silent = 'req-00000000-0000-4000-8000-0000000000c3';
+    for (const [id, status, episode] of [[approved, 'approved', 1], [silent, 'negotiating', 2]] as const) {
+      h.store.renegotiations.push({ requestId: id, parentRequestId: parent.request.id, contractId: 2, episode });
+      h.store.requests.set(id, { ...parent.request, id, status, createdBy: APP_CREATOR });
+    }
+    const outcome = await cancelRenegotiationsBackOnTrack(h.deps, parent.request, 2);
+    expect(outcome).toEqual({ cancelled: [silent], announced: false });
+    expect((await h.store.getRequest(approved))?.status).toBe('approved');
+    expect(h.store.auditLog.find((e) => e.action === 'renegotiation-cancelled')?.payload).toMatchObject({ approvedBy: [] });
   });
 
   it('notifies once when a crash happened after the status update and before any comment', async () => {

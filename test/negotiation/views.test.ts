@@ -48,6 +48,15 @@ describe('appliedChanges', () => {
     expect(changes[3].text).toBe('Moved PAY-4 to the backlog.');
   });
 
+  it('says "Linked existing" for a kept deliverable and does not claim a new link', () => {
+    const changes = appliedChanges({ title: 'Refund API', sourceIssueKey: 'MOB-2' }, 'PAY', option, contract, {
+      deliverableCreated: false,
+      linkCreated: false,
+    });
+    expect(changes[0].text).toBe('Linked existing PAY-9 "Refund API" in PAY and moved its due date to Nov 27, 2026.');
+    expect(changes[1].text).toBe('PAY-9 already blocked MOB-2; no new link.');
+  });
+
   it('is empty before the deliverable exists', () => {
     expect(appliedChanges({ title: 'x', sourceIssueKey: 'MOB-2' }, 'PAY', option, { ...contract, deliverableIssueKey: null })).toEqual([]);
   });

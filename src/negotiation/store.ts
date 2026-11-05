@@ -336,6 +336,13 @@ export const sqlStore: NegotiationStore = {
     );
     return Number(rows[0]?.n ?? 0) > 0;
   },
+  async hasContractStep(contractId, step) {
+    const rows = await select<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM audit_log WHERE entity_type = 'contract' AND entity_id = ? AND action = ?",
+      [String(contractId), step],
+    );
+    return Number(rows[0]?.n ?? 0) > 0;
+  },
   async lastStepAgeSeconds(requestId, step) {
     const rows = await select<{ age: number | null }>(
       `SELECT TIMESTAMPDIFF(SECOND, MAX(created_at), CURRENT_TIMESTAMP) AS age FROM audit_log
@@ -377,11 +384,12 @@ export const sqlStore: NegotiationStore = {
     );
     return rows[0]?.request_id ?? null;
   },
-  async undecidedRenegotiations(providerTeamId) {
+  async undecidedRenegotiations(providerTeamId, contractId) {
+    const byContract = contractId === undefined ? '' : ' AND n.contract_id = ?';
     const rows = await select<{ request_id: string }>(
       `SELECT n.request_id FROM renegotiations n JOIN requests r ON r.id = n.request_id
-       WHERE r.provider_team_id = ? AND r.status IN (${marks(UNDECIDED)}) ORDER BY n.created_at`,
-      [providerTeamId, ...UNDECIDED],
+       WHERE r.provider_team_id = ? AND r.status IN (${marks(UNDECIDED)})${byContract} ORDER BY n.created_at`,
+      [providerTeamId, ...UNDECIDED, ...(contractId === undefined ? [] : [contractId])],
     );
     return rows.map((row) => row.request_id);
   },
@@ -518,8 +526,48 @@ export interface AuditEntry {
   createdAt: string;
 }
 
-/** Latest audit entries of the given requests and contracts (viewer filter in SQL, before the limit). */
-export async function auditFor(requestIds: readonly string[], contractIds: readonly number[], limit = 50): Promise<AuditEntry[]> {
+interface AuditRowData {
+  id: number;
+  entity_type: string;
+  entity_id: string;
+  action: string;
+  actor_account_id: string | null;
+  payload: unknown;
+  created_at: string;
+}
+
+const toAuditEntry = (row: AuditRowData): AuditEntry => ({
+  id: Number(row.id),
+  entityType: row.entity_type,
+  entityId: row.entity_id,
+  action: row.action,
+  actorAccountId: row.actor_account_id,
+  payload: parseJson<unknown>(row.payload, null),
+  createdAt: String(row.created_at),
+});
+
+/**
+ * The latest "Clean demo data" entry; the Audit tab starts at it. Forge SQL (TiDB) hands out AUTO_INCREMENT
+ * ids in per-node ranges, so ids are not chronological: order by created_at, never by id alone.
+ */
+export async function lastDemoClean(): Promise<AuditEntry | null> {
+  const rows = await select<AuditRowData>(
+    "SELECT * FROM audit_log WHERE entity_type = 'demo' AND entity_id = 'clean' AND action = 'demo-cleaned' ORDER BY created_at DESC, id DESC LIMIT 1",
+  );
+  return rows[0] ? toAuditEntry(rows[0]) : null;
+}
+
+/**
+ * Latest audit entries of the given requests and contracts (viewer filter in SQL, before the limit);
+ * with `sinceId` only entries written at or after the time of that audit entry (e.g. the last demo clean).
+ * The cut uses created_at, not the id (see lastDemoClean); contract ids can be reused after a clean.
+ */
+export async function auditFor(
+  requestIds: readonly string[],
+  contractIds: readonly number[],
+  limit = 50,
+  sinceId: number | null = null,
+): Promise<AuditEntry[]> {
   const clauses: string[] = [];
   const params: Array<string | number> = [];
   if (requestIds.length) {
@@ -531,24 +579,12 @@ export async function auditFor(requestIds: readonly string[], contractIds: reado
     params.push(...contractIds.map(String));
   }
   if (clauses.length === 0) return [];
-  const rows = await select<{
-    id: number;
-    entity_type: string;
-    entity_id: string;
-    action: string;
-    actor_account_id: string | null;
-    payload: unknown;
-    created_at: string;
-  }>(`SELECT * FROM audit_log WHERE ${clauses.join(' OR ')} ORDER BY created_at DESC, id DESC LIMIT ${Math.floor(limit)}`, params);
-  return rows.map((row) => ({
-    id: Number(row.id),
-    entityType: row.entity_type,
-    entityId: row.entity_id,
-    action: row.action,
-    actorAccountId: row.actor_account_id,
-    payload: parseJson<unknown>(row.payload, null),
-    createdAt: String(row.created_at),
-  }));
+  const since = sinceId === null ? '' : ' AND created_at >= (SELECT s.created_at FROM audit_log s WHERE s.id = ?)';
+  const rows = await select<AuditRowData>(
+    `SELECT * FROM audit_log WHERE (${clauses.join(' OR ')})${since} ORDER BY created_at DESC, id DESC LIMIT ${Math.floor(limit)}`,
+    sinceId === null ? params : [...params, sinceId],
+  );
+  return rows.map(toAuditEntry);
 }
 
 export interface ContractListRow {

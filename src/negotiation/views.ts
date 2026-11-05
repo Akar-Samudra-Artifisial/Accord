@@ -14,7 +14,15 @@ import {
   type TranscriptLine,
 } from './delegates';
 import { storedDecision } from './orchestrator';
-import type { Approval, Contract, DependencyRequest, NegotiationStore, RoundRecord, StoredOption } from './types';
+import {
+  LINK_CREATED_STEP,
+  type Approval,
+  type Contract,
+  type DependencyRequest,
+  type NegotiationStore,
+  type RoundRecord,
+  type StoredOption,
+} from './types';
 
 export interface OptionView {
   id: number;
@@ -87,23 +95,41 @@ export interface AppliedChange {
   issueKeys: string[];
 }
 
+/** Whether apply-contract created the deliverable and the blocks link, or found them already there. */
+export interface AppliedProvenance {
+  /** False for a renegotiation, which keeps the deliverable of the contract it replaced. */
+  deliverableCreated: boolean;
+  /** False when the deliverable already blocked the source issue (no `link-created` step of this contract). */
+  linkCreated: boolean;
+}
+
 /** Past-tense list of what apply-contract changed (mirrors `previewChanges`). */
 export function appliedChanges(
   request: Pick<DependencyRequest, 'title' | 'sourceIssueKey'>,
   providerProjectKey: string,
   option: OptionView,
   contract: Contract,
+  provenance: AppliedProvenance = { deliverableCreated: true, linkCreated: true },
 ): AppliedChange[] {
   const deliverable = contract.deliverableIssueKey;
   if (!deliverable) return [];
   const range = formatDateRange(contract.agreedDateMin, contract.agreedDateMax);
+  const due = formatDate(contract.agreedDateMax);
   const changes: AppliedChange[] = [
     {
       kind: 'create-issue',
-      text: `Created ${deliverable} "${request.title}" in ${providerProjectKey}, due ${formatDate(contract.agreedDateMax)}.`,
+      text: provenance.deliverableCreated
+        ? `Created ${deliverable} "${request.title}" in ${providerProjectKey}, due ${due}.`
+        : `Linked existing ${deliverable} "${request.title}" in ${providerProjectKey} and moved its due date to ${due}.`,
       issueKeys: [deliverable],
     },
-    { kind: 'link', text: `Linked ${deliverable} as blocking ${request.sourceIssueKey}.`, issueKeys: [deliverable, request.sourceIssueKey] },
+    {
+      kind: 'link',
+      text: provenance.linkCreated
+        ? `Linked ${deliverable} as blocking ${request.sourceIssueKey}.`
+        : `${deliverable} already blocked ${request.sourceIssueKey}; no new link.`,
+      issueKeys: [deliverable, request.sourceIssueKey],
+    },
   ];
   for (const item of option.shifted) {
     const visible = item.key !== RESTRICTED;
@@ -157,6 +183,7 @@ function toOptionView(
   provider: Team,
   variationRoundId: number | null,
   visible: ReadonlySet<string> | null,
+  existingDeliverable: string | null,
 ): OptionView {
   const consequences = buildConsequences(option.kind, option.trace);
   const shiftSteps = option.trace.filter((step) => step.step === 'shift');
@@ -181,7 +208,7 @@ function toOptionView(
     consequences: { requester: r(consequences.requester), provider: r(consequences.provider) },
     explanation: r(explainOption(option)),
     trace: option.trace.map((step) => ({ step: step.step, text: r(step.text), sources: redactSources(step.sources, visible) })),
-    jiraChanges: previewChanges(request, provider.jiraProjectKey, option).map((change) => ({ ...change, text: r(change.text) })),
+    jiraChanges: previewChanges(request, provider.jiraProjectKey, option, existingDeliverable).map((change) => ({ ...change, text: r(change.text) })),
   };
 }
 
@@ -241,7 +268,8 @@ export async function buildDealSheet(input: DealSheetInput): Promise<DealSheetVi
   const sideOf = (teamId: string): Side => (teamId === request.requesterTeamId ? 'requester' : 'provider');
 
   const { createdBy, ...publicRequest } = request;
-  const optionViews = ranked.map((option) => toOptionView(option, request, provider, variationRoundId, visible));
+  const existingDeliverable = parentContract?.deliverableIssueKey ?? null;
+  const optionViews = ranked.map((option) => toOptionView(option, request, provider, variationRoundId, visible, existingDeliverable));
   const labelOf = (id: number) => optionViews.find((o) => o.id === id)?.label ?? byId.get(id)?.kind ?? null;
   const toSideStatus = (approval: Approval | null): SideStatus => ({
     decision: approval?.decision ?? null,
@@ -251,6 +279,13 @@ export async function buildDealSheet(input: DealSheetInput): Promise<DealSheetVi
   });
   const sideStatus: Record<Side, SideStatus> = { requester: toSideStatus(state.requester), provider: toSideStatus(state.provider) };
   const agreedView = contract ? optionViews.find((o) => o.id === contract.optionId) : undefined;
+  const applied = request.status === 'contracted' && contract && agreedView;
+  const provenance: AppliedProvenance | null = applied
+    ? {
+        deliverableCreated: !(existingDeliverable && existingDeliverable === contract.deliverableIssueKey),
+        linkCreated: await store.hasContractStep(contract.id, LINK_CREATED_STEP),
+      }
+    : null;
   return {
     request: publicRequest,
     requester: { teamKey: requester.teamKey, name: requester.name },
@@ -278,9 +313,7 @@ export async function buildDealSheet(input: DealSheetInput): Promise<DealSheetVi
     contract,
     sideStatus,
     appliedChanges:
-      request.status === 'contracted' && contract && agreedView
-        ? appliedChanges(request, provider.jiraProjectKey, agreedView, contract)
-        : [],
+      contract && agreedView && provenance ? appliedChanges(request, provider.jiraProjectKey, agreedView, contract, provenance) : [],
     renegotiationContext: parentContract
       ? {
           text: renegotiationContext(parentContract, typeof criticalBugs === 'number' ? criticalBugs : null),

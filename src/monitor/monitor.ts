@@ -11,7 +11,12 @@ import {
 import { pickActiveAndNext } from '../capacity/aggregate';
 import { formatDate, formatDateRange } from '../format/dates';
 import { plural } from '../format/text';
-import { quotedTitle, type RenegotiationResult, type RenegotiationTrigger } from '../negotiation/orchestrator';
+import {
+  quotedTitle,
+  type BackOnTrackCancellation,
+  type RenegotiationResult,
+  type RenegotiationTrigger,
+} from '../negotiation/orchestrator';
 import type { Contract, ContractStatus, DependencyRequest, RenegotiationWorkAhead } from '../negotiation/types';
 import type { Team } from '../teams/repository';
 
@@ -86,6 +91,8 @@ export interface MonitorDeps {
   today: () => IsoDate;
   /** Opens (idempotently) the renegotiation of an at-risk contract (FR-14). */
   renegotiate(trigger: RenegotiationTrigger): Promise<RenegotiationResult>;
+  /** Withdraws the undecided renegotiations of a contract that is back on track (idempotent). */
+  cancelRenegotiations(contract: Contract, request: DependencyRequest): Promise<BackOnTrackCancellation>;
 }
 
 export interface ContractEvaluation {
@@ -113,6 +120,8 @@ export interface MonitorTeamResult {
   renegotiations: Array<MonitorRenegotiation & { contractId: number }>;
   /** At-risk contracts of an applied renegotiation whose projection is not worse than before it (no new one). */
   held: number[];
+  /** Renegotiations withdrawn because their contract is back on track. */
+  cancelledRenegotiations: string[];
 }
 
 const APP_ACTOR_REASON = 'Daily contract monitor; runs as the app without a user context.';
@@ -148,6 +157,7 @@ export function statusComment(
   evaluation: ContractEvaluation,
   pessimistic: number,
   renegotiation: MonitorRenegotiation | null = null,
+  renegotiationCancelled = false,
 ): string {
   const link = `${request.sourceIssueKey} → ${contract.deliverableIssueKey ?? 'deliverable pending'}`;
   const projected = formatDate(evaluation.projectedDate, 'beyond the planning horizon');
@@ -164,7 +174,10 @@ export function statusComment(
       `${workload} ${renegotiationSentence(renegotiation) ?? 'Both teams may want to review the plan together.'}`
     );
   }
-  return `Accord monitor: ${subject} is back on track. Projected delivery is ${projected}, within the agreed ${agreedKind} ${agreedDates}.`;
+  const withdrawn = renegotiationCancelled
+    ? ' The open renegotiation is no longer needed and was cancelled; the current contract stays in effect.'
+    : '';
+  return `Accord monitor: ${subject} is back on track. Projected delivery is ${projected}, within the agreed ${agreedKind} ${agreedDates}.${withdrawn}`;
 }
 
 /** Monitored contracts of a provider plus the capacity and commitments every evaluation uses. */
@@ -288,6 +301,7 @@ export async function monitorProviderTeam(deps: MonitorDeps, teamId: string): Pr
     comments: [],
     renegotiations: [],
     held: [],
+    cancelledRenegotiations: [],
   };
   const loaded = await loadProviderPlanning(deps, teamId);
   if (!loaded) return result;
@@ -352,7 +366,13 @@ export async function monitorProviderTeam(deps: MonitorDeps, teamId: string): Pr
       continue;
     }
     const claim = await claimStatus(deps, contract, request, evaluation);
-    result.comments.push(...(await postStatus(deps, team, contract, request, evaluation, capacity.pessimistic, claim, null)));
+    const withdrawn = to === 'on-track' ? await cancelBackOnTrack(deps, contract, request) : null;
+    if (withdrawn) result.cancelledRenegotiations.push(...withdrawn.cancelled);
+    // Only a renegotiation announced on the source issue gets a sentence there, inside the on-track comment.
+    const cancelledNote = withdrawn !== null && withdrawn.announced && withdrawn.cancelled.length > 0;
+    result.comments.push(
+      ...(await postStatus(deps, team, contract, request, evaluation, capacity.pessimistic, claim, null, cancelledNote)),
+    );
   }
   // At most MAX_RENEGOTIATIONS_PER_RUN new renegotiations per provider and run, nearest agreed date first;
   // the rest open on a later run (the opener is idempotent per contract and episode). The at-risk comment is
@@ -440,6 +460,25 @@ async function renegotiateAtRisk(
   }
 }
 
+/**
+ * The contract is on track again (FR-14): its undecided renegotiations are withdrawn. Runs on every on-track
+ * evaluation, so a crash is finished by the next run. Failures are audited and never stop the monitor.
+ */
+async function cancelBackOnTrack(
+  deps: MonitorDeps,
+  contract: Contract,
+  request: DependencyRequest,
+): Promise<BackOnTrackCancellation | null> {
+  try {
+    return await deps.cancelRenegotiations(contract, request);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Accord renegotiation cancel for contract ${contract.id} failed`, message);
+    await deps.store.audit('contract', String(contract.id), 'renegotiation-cancel-failed', null, { error: message.slice(0, 500), as: 'app' });
+    return null;
+  }
+}
+
 interface StatusClaim {
   seq: number;
   /** Issues claimed by this run for this announcement (each gets exactly one comment). */
@@ -494,6 +533,7 @@ async function postStatus(
   pessimistic: number,
   claim: StatusClaim | null,
   renegotiation: MonitorRenegotiation | null,
+  renegotiationCancelled = false,
 ): Promise<string[]> {
   if (!claim) return [];
   const { seq, targets } = claim;
@@ -507,7 +547,8 @@ async function postStatus(
     const step = `notify:${seq}:${issueKey}`;
     await deps.store.audit('contract', entityId, step, null, { issueKey, status: evaluation.to, as: 'app', reason: APP_ACTOR_REASON });
     try {
-      await deps.jira.addComment(issueKey, statusComment(audience, request, contract, evaluation, pessimistic, renegotiation), mentions);
+      const cancelled = renegotiationCancelled && audience === 'requester';
+      await deps.jira.addComment(issueKey, statusComment(audience, request, contract, evaluation, pessimistic, renegotiation, cancelled), mentions);
       posted.push(issueKey);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

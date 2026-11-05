@@ -11,8 +11,28 @@ vi.mock('../../src/sql/db', () => ({
   parseJson: <T>(value: unknown, fallback: T): T => (typeof value === 'string' ? (JSON.parse(value) as T) : ((value as T) ?? fallback)),
 }));
 
-import { contractsForProvider, sqlStore } from '../../src/negotiation/store';
+import { auditFor, contractsForProvider, lastDemoClean, sqlStore } from '../../src/negotiation/store';
 import { request } from './fakes';
+
+describe('audit since the last demo clean (SQL)', () => {
+  beforeEach(() => {
+    db.select.mockClear();
+  });
+
+  it('finds the latest clean by time, not by id', async () => {
+    await lastDemoClean();
+    expect(db.select.mock.calls[0][0]).toMatch(/action = 'demo-cleaned' ORDER BY created_at DESC, id DESC LIMIT 1/);
+  });
+
+  it('cuts at the time of the clean entry instead of comparing ids, newest first', async () => {
+    await auditFor(['req-1'], [4], 50, 30165);
+    const [statement, params] = db.select.mock.calls[0];
+    expect(statement).toMatch(/created_at >= \(SELECT s\.created_at FROM audit_log s WHERE s\.id = \?\)/);
+    expect(statement).not.toMatch(/\bid > \?/);
+    expect(statement).toMatch(/ORDER BY created_at DESC, id DESC LIMIT 50$/);
+    expect(params).toEqual(['req-1', '4', 30165]);
+  });
+});
 
 describe('contractsForProvider (SQL)', () => {
   beforeEach(() => {

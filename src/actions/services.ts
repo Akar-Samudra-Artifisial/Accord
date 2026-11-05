@@ -142,6 +142,8 @@ export const actionServices: ActionServices = {
         ? {
             ...contractDisplay(sheet.contract),
             ...contractLinks(site, { sourceIssueKey: sheet.request.sourceIssueKey, deliverableIssueKey: sheet.contract.deliverableIssueKey }),
+            // Past-tense Jira changes; says "Linked existing" when a renegotiation kept the deliverable.
+            jiraChanges: sheet.appliedChanges.map((change) => change.text),
           }
         : null,
     };

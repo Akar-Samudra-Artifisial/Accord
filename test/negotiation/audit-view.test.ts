@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { auditLabel, toAuditRow, type AuditViewContext } from '../../src/negotiation/audit-view';
+import { auditLabel, auditTimeline, toAuditRow, type AuditViewContext } from '../../src/negotiation/audit-view';
 import type { AuditEntry } from '../../src/negotiation/store';
 
 const context: AuditViewContext = {
@@ -16,6 +16,26 @@ const entry = (action: string, actor: string | null, payload: unknown = null): A
   actorAccountId: actor,
   payload,
   createdAt: '2026-11-05 10:00:00',
+});
+
+describe('auditTimeline', () => {
+  const at = (id: number, action: string, createdAt: string): AuditEntry => ({ ...entry(action, null), id, createdAt });
+  // one-atlas: ids from two TiDB ranges (30xxx, 60xxx) are not chronological.
+  const cleaned = at(30165, 'demo-cleaned', '2026-11-05 10:20:42');
+
+  it('shows the latest clean first right after a clean', () => {
+    expect(auditTimeline([], cleaned, 50).map((e) => e.id)).toEqual([30165]);
+  });
+
+  it('orders by time, not id, and keeps the clean below what followed it', () => {
+    const recent = [
+      at(30170, 'contract-applied', '2026-11-05 10:30:05'),
+      at(60160, 'approved', '2026-11-05 10:30:01'),
+      at(30166, 'created', '2026-11-05 10:20:42'),
+    ];
+    expect(auditTimeline(recent, cleaned, 50).map((e) => e.action)).toEqual(['contract-applied', 'approved', 'created', 'demo-cleaned']);
+    expect(auditTimeline(recent, cleaned, 2).map((e) => e.action)).toEqual(['contract-applied', 'approved']);
+  });
 });
 
 describe('audit rows', () => {

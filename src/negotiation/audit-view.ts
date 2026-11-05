@@ -10,6 +10,16 @@ export function escalatedNames(payload: unknown): string[] {
     .filter((name): name is string => typeof name === 'string' && name !== '');
 }
 
+/**
+ * Audit tab order: newest first by time (audit ids are not chronological in Forge SQL), the latest
+ * `demo-cleaned` entry included, at most `limit` entries.
+ */
+export function auditTimeline(recent: readonly AuditEntry[], cleaned: AuditEntry | null, limit: number): AuditEntry[] {
+  const entries = cleaned ? [...recent.filter((entry) => entry.id !== cleaned.id), cleaned] : [...recent];
+  // Stable sort: entries in the same second keep the query order, the clean stays below what followed it.
+  return entries.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0)).slice(0, limit);
+}
+
 /** One row of the Audit tab: only safe, human-readable fields (no raw account ids or issue lists). */
 export interface AuditRow {
   id: number;
@@ -47,6 +57,8 @@ const LABELS: Record<string, string> = {
   'comment-failed': 'Jira comment failed',
   'renegotiation-opened': 'Renegotiation opened',
   'renegotiation-skipped': 'Renegotiation not opened',
+  'renegotiation-cancelled': 'Renegotiation cancelled',
+  'demo-cleaned': 'Demo data cleaned',
   'contract:due-date': 'Deliverable due date moved',
   'contract-superseded': 'Contract superseded',
   cancelled: 'Request cancelled',
@@ -96,7 +108,8 @@ function summaryOf(entry: AuditEntry, context: AuditViewContext): string {
     }
     case 'contract-applied': {
       const agreed = record(p.agreed);
-      return `Agreed ${formatDateRange(text(agreed.min), text(agreed.max))}`;
+      const reused = p.deliverableCreated === false && text(p.deliverable) ? `; linked existing ${text(p.deliverable)}` : '';
+      return `Agreed ${formatDateRange(text(agreed.min), text(agreed.max))}${reused}`;
     }
     case 'renegotiation-opened':
       return text(p.note);
@@ -106,6 +119,12 @@ function summaryOf(entry: AuditEntry, context: AuditViewContext): string {
     }
     case 'cancelled':
       return text(p.reason).slice(0, 120);
+    case 'renegotiation-cancelled': {
+      const names = escalatedNames({ contacts: p.approvedBy });
+      return `${text(p.reason).slice(0, 120)}${names.length ? `; already approved by ${names.join(', ')}` : ''}`;
+    }
+    case 'demo-cleaned':
+      return text(p.summary).slice(0, 200);
     case 'status-changed':
       return `${text(p.from)} → ${text(p.to)}; projected ${formatDate(text(p.projectedDate), 'beyond the planning horizon')}, agreed by ${formatDate(text(p.agreedDateMax))}`;
     default:

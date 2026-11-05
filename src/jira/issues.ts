@@ -197,6 +197,51 @@ export async function linkBlocks(blocker: string, blocked: string): Promise<void
   });
 }
 
+/** Adds one label to an issue (as the app); a label that is already there is left as is. */
+export async function addIssueLabel(issueKey: string, label: string): Promise<void> {
+  await jira<void>(route`/rest/api/3/issue/${issueKey}`, { method: 'PUT', body: { update: { labels: [{ add: label }] } } });
+}
+
+interface IssueTransitions {
+  transitions: Array<{ id: string; to?: { statusCategory?: { key?: string } } }>;
+}
+
+/** Moves the issue through the first transition that ends in the Done category; false when there is none. */
+export async function transitionToDone(issueKey: string): Promise<boolean> {
+  const { transitions } = await jira<IssueTransitions>(route`/rest/api/3/issue/${issueKey}/transitions`);
+  const done = transitions.find((transition) => transition.to?.statusCategory?.key === 'done');
+  if (!done) return false;
+  await jira<void>(route`/rest/api/3/issue/${issueKey}/transitions`, { method: 'POST', body: { transition: { id: done.id } } });
+  return true;
+}
+
+/** Account id of the app user (as the app); null when Jira does not report an app account. */
+export async function appAccountId(): Promise<string | null> {
+  const me = await jira<{ accountId?: string; accountType?: string }>(route`/rest/api/3/myself`);
+  return me.accountType === 'app' && typeof me.accountId === 'string' && me.accountId ? me.accountId : null;
+}
+
+interface CommentPage {
+  comments: Array<{ id: string; author?: { accountId?: string } }>;
+  total: number;
+}
+
+/** All comments of an issue (as the app) with their author account id. */
+export async function listIssueComments(issueKey: string): Promise<Array<{ id: string; authorAccountId: string | null }>> {
+  const result: Array<{ id: string; authorAccountId: string | null }> = [];
+  for (let page = 0, startAt = 0; page < MAX_PAGES; page += 1) {
+    const response = await jira<CommentPage>(route`/rest/api/3/issue/${issueKey}/comment?startAt=${startAt}&maxResults=100`);
+    result.push(...response.comments.map((comment) => ({ id: comment.id, authorAccountId: comment.author?.accountId ?? null })));
+    startAt += response.comments.length;
+    if (response.comments.length === 0 || startAt >= response.total) break;
+  }
+  return result;
+}
+
+export async function deleteIssueComment(issueKey: string, commentId: string): Promise<void> {
+  await jira<void>(route`/rest/api/3/issue/${issueKey}/comment/${commentId}`, { method: 'DELETE' });
+}
+
 export async function deleteIssueLink(linkId: string): Promise<void> {
   await jira<void>(route`/rest/api/3/issueLink/${linkId}`, { method: 'DELETE' });
 }

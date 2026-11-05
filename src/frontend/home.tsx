@@ -268,6 +268,24 @@ const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>;
   const [notice, setNotice] = useState<string | null>(null);
   const [leadState, setLeadState] = useState<DemoLeadState | null>(null);
   const [seedBlocked, setSeedBlocked] = useState<string | null>(null);
+  const [cleanOpen, setCleanOpen] = useState(false);
+  const [notRestored, setNotRestored] = useState<string[]>([]);
+
+  const cleanDemo = async () => {
+    setCleanOpen(false);
+    setAction('cleanDemoData');
+    setError(null);
+    setNotice(null);
+    setNotRestored([]);
+    const result = await call<{ summary: string; notRestored: string[] }>('cleanDemoData');
+    if (!result.ok) setError(result.error);
+    else {
+      setNotice(result.summary);
+      setNotRestored(result.notRestored);
+      await onSeeded();
+    }
+    setAction(null);
+  };
 
   const loadLeadState = async () => {
     const result = await call<DemoLeadState>('getDemoLeadState');
@@ -400,6 +418,11 @@ const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>;
             Make me the demo lead
           </Button>
         ) : null}
+        {leadState?.canManage ? (
+          <Button appearance="warning" isDisabled={running || action !== null} onClick={() => setCleanOpen(true)}>
+            Clean demo data
+          </Button>
+        ) : null}
       </ButtonGroup>
       {seedBlocked ? <Text color="color.text.subtle">{seedBlocked}</Text> : null}
       {leadState?.canManage ? (
@@ -417,6 +440,9 @@ const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>;
       {notice ? (
         <SectionMessage appearance="success">
           <Text>{notice}</Text>
+          {notRestored.map((item) => (
+            <Text key={item}>{`Not restored: ${item}`}</Text>
+          ))}
         </SectionMessage>
       ) : null}
       {steps ? (
@@ -461,6 +487,28 @@ const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>;
               </Button>
               <Button appearance="primary" onClick={seed}>
                 Seed demo data
+              </Button>
+            </ModalFooter>
+          </Modal>
+        ) : null}
+      </ModalTransition>
+      <ModalTransition>
+        {cleanOpen ? (
+          <Modal onClose={() => setCleanOpen(false)}>
+            <ModalHeader>
+              <ModalTitle>Clean demo data?</ModalTitle>
+            </ModalHeader>
+            <ModalBody>
+              <Text>
+                {`This deletes every request, contract, renegotiation and escalation between ${listKeys((leadState?.projects ?? []).map((p) => p.projectKey)) || 'the demo projects'}, moves the demo bugs to the backlog, archives the deliverables Accord created, removes the blocks links it added and the comments the Accord app posted on demo issues. Issues and comments written by people are never deleted. Older audit events are hidden from the Audit tab but kept in storage.`}
+              </Text>
+            </ModalBody>
+            <ModalFooter>
+              <Button appearance="subtle" onClick={() => setCleanOpen(false)}>
+                Cancel
+              </Button>
+              <Button appearance="warning" onClick={cleanDemo}>
+                Clean demo data
               </Button>
             </ModalFooter>
           </Modal>

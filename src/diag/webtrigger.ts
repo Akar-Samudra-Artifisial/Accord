@@ -18,13 +18,22 @@ import { randomUUID } from 'node:crypto';
 import { productionDeps } from '../negotiation/deps';
 import { createRequest, retryEscalations } from '../negotiation/orchestrator';
 import { pendingEscalations, requestsByStatus } from '../negotiation/store';
-import { deleteIssueLink, isBlocksFrom, ISSUE_KEY, linkBlocks, listIssueLinks, type IssueLink } from '../jira/issues';
+import {
+  appAccountId,
+  deleteIssueLink,
+  isBlocksFrom,
+  ISSUE_KEY,
+  linkBlocks,
+  listIssueComments,
+  listIssueLinks,
+  type IssueLink,
+} from '../jira/issues';
 import type { CostClass, Size } from '../planner';
 import { executeSeedStep, existingDemoProjectKey, getSeedPlan, getSeedStatus, SEED_QUEUE_KEY, startSeed } from '../demo/seed';
 import { MIGRATIONS } from '../sql/migrations';
 import { ACCOUNT_ID, assignDemoLead, demoLeadPort } from '../demo/demo-lead';
 import { parseCreateInput, resolveTeamRef } from '../actions/handlers';
-import { defaultTitle, dependencyMap } from '../resolvers/negotiation';
+import { auditTrail, defaultTitle, dependencyMap } from '../resolvers/negotiation';
 import { actionServices, links } from '../actions/services';
 import { contractLinks } from '../actions/links';
 import { contractDisplay } from '../actions/display';
@@ -32,6 +41,8 @@ import { listContracts as listStoredContracts } from '../negotiation/store';
 import { SEED_STEPS, type SeedStep } from '../demo/seed-data';
 import { addDemoBugs, resetDemoBugs } from '../demo/critical-bugs';
 import { demoBugPort } from '../demo/critical-bugs-port';
+import { cleanDemoData } from '../demo/clean';
+import { demoCleanPort } from '../demo/clean-port';
 import { monitorDeps, scheduleMonitor, sqlMonitorStore } from '../monitor/deps';
 import { monitorProviderTeam } from '../monitor/monitor';
 import { actionHandlers } from '../actions';
@@ -444,6 +455,9 @@ export async function devDiagHandler(request: WebTriggerRequest): Promise<WebTri
       body = request.queryParameters?.op?.[0] === 'reset'
         ? await resetDemoBugs(demoBugPort, await existingDemoProjectKey('PAY'), 'diag-webtrigger')
         : await addDemoBugs(demoBugPort, await existingDemoProjectKey('PAY'), 'diag-webtrigger');
+    } else if (action === 'clean-demo') {
+      // Same code path as the "Clean demo data" button; the diag key stands in for the admin check.
+      body = await cleanDemoData(demoCleanPort, 'diag-webtrigger', async () => true);
     } else if (action === 'demo-lead') {
       // Assigns demo data ownership only (project lead + charter approver); no user identity is borrowed.
       const lead = diagLead(request.queryParameters ?? {});
@@ -470,6 +484,22 @@ export async function devDiagHandler(request: WebTriggerRequest): Promise<WebTri
       };
     } else if (action === 'verify-sprint-move') {
       body = await verifySprintMove(request.queryParameters ?? {});
+    } else if (action === 'comments') {
+      // Comment counts per author kind (app vs. people) of one Accord issue; no comment text.
+      const issue = request.queryParameters?.issue?.[0];
+      if (!issue || !ISSUE_KEY.test(issue)) throw new UserFacingError('Missing ?issue=<KEY-1>');
+      const [appId, comments] = await Promise.all([appAccountId(), listIssueComments(issue)]);
+      body = {
+        issue,
+        total: comments.length,
+        app: comments.filter((comment) => comment.authorAccountId === appId).length,
+        others: comments.filter((comment) => comment.authorAccountId !== appId).length,
+      };
+    } else if (action === 'audit-trail') {
+      // Same rows as the Audit tab for `?account=` (default: development owner, an approver of the demo teams).
+      const account = diagLead({ lead: request.queryParameters?.account ?? [] });
+      if (!account) throw new UserFacingError('Pass ?account=<accountId> or set ACCORD_DEV_OWNER_ACCOUNT_ID.');
+      body = await auditTrail(account);
     } else if (action === 'audit') {
       const id = request.queryParameters?.id?.[0];
       body = id ? await select('SELECT id, entity_type, entity_id, action, created_at FROM audit_log WHERE entity_id = ? ORDER BY created_at DESC, id DESC LIMIT 30', [id])

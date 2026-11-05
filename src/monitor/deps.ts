@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Queue } from '@forge/events';
 import type { ContractStatus } from '../negotiation/types';
-import { openRenegotiation } from '../negotiation/orchestrator';
+import { cancelRenegotiationsBackOnTrack, openRenegotiation } from '../negotiation/orchestrator';
 import { run, select } from '../sql/db';
 import { addComment, ISSUE_KEY, searchIssues } from '../jira/issues';
 import { audit } from '../teams/repository';
@@ -92,6 +92,7 @@ export const monitorDeps: MonitorDeps = {
   },
   today: () => new Date().toISOString().slice(0, 10),
   renegotiate: (trigger) => openRenegotiation(productionDeps, trigger, `req-${randomUUID()}`),
+  cancelRenegotiations: (contract, request) => cancelRenegotiationsBackOnTrack(productionDeps, request, contract.id),
 };
 
 /** Queues one `monitor-team` job per provider team with monitored contracts. */

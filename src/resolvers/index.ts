@@ -36,6 +36,8 @@ import { scheduleMonitor } from '../monitor/deps';
 import { addDemoBugs, resetDemoBugs } from '../demo/critical-bugs';
 import { demoBugPort, requireDemoBugPermissions } from '../demo/critical-bugs-port';
 import { assignDemoLead, demoLeadPort, userCanManageDemoProjects, userSeedAccess } from '../demo/demo-lead';
+import { cleanDemoData } from '../demo/clean';
+import { demoCleanPort } from '../demo/clean-port';
 
 type Result<T> = ({ ok: true } & T) | { ok: false; error: string };
 
@@ -240,6 +242,16 @@ resolver.define('makeMeDemoLead', async ({ context }: { context: RequestContext 
     return { ok: true, results };
   } catch (error) {
     return failure('makeMeDemoLead', error);
+  }
+});
+
+/** Admin only (site admin or project admin of every Accord demo project), checked here as the signed-in user. */
+resolver.define('cleanDemoData', async ({ context }: { context: RequestContext }) => {
+  try {
+    if (!context.accountId) throw new UserFacingError('A signed-in Jira user is required.');
+    return { ok: true, ...(await cleanDemoData(demoCleanPort, context.accountId, await userCanManageDemoProjects())) };
+  } catch (error) {
+    return failure('cleanDemoData', error);
   }
 });
 
