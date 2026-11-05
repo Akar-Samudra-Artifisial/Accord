@@ -200,7 +200,7 @@ function toOptionView(
       const step = shiftSteps.find((candidate) => candidate.values.key === item.key);
       return {
         key: visible && !visible.has(item.key) ? RESTRICTED : item.key,
-        toSprint: step ? String(step.values.toSprint) : item.toSprintId,
+        toSprint: isProjectedSprint(item.toSprintId) ? 'the backlog' : step ? String(step.values.toSprint) : item.toSprintId,
         toBacklog: isProjectedSprint(item.toSprintId),
       };
     }),

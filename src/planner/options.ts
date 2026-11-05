@@ -7,7 +7,7 @@ import {
   itemSize,
 } from './cost';
 import { addDays, daysBetween, parseIsoDate } from './dates';
-import { buildConsequences, makeStep } from './explain';
+import { BACKLOG_TARGET, buildConsequences, isProjectedSprintId, makeStep } from './explain';
 import { plural } from '../format/text';
 import type {
   DateRange,
@@ -339,7 +339,8 @@ function shiftOption(ctx: Context, limit: number): ShiftOutcome {
           key: m.item.key,
           summary: m.item.summary,
           fromSprint: ctx.slots[m.from].sprint.name,
-          toSprint: ctx.slots[m.to].sprint.name,
+          // A projected sprint does not exist in Jira: apply-contract moves the issue to the backlog.
+          toSprint: isProjectedSprintId(ctx.slots[m.to].sprint.id) ? BACKLOG_TARGET : ctx.slots[m.to].sprint.name,
         },
         [
           { type: 'issue', ref: m.item.key },

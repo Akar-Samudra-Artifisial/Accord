@@ -1108,28 +1108,41 @@ interface AuditRow {
   summary: string;
 }
 
-/** Reloads when the tab is selected and after decisions or demo actions (`watch`), not only on Refresh. */
-const AuditTab = ({ active, watch }: { active: boolean; watch: number }) => {
+/**
+ * Reloads when the tab is selected, after decisions or demo actions (`watch`) and, while the tab is open,
+ * with the same light background refresh as Inbox and Contracts.
+ */
+const AuditTab = ({ active, watch, lastActivityAt }: LiveTabProps & { watch: number }) => {
   const [rows, setRows] = useState<AuditRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  // Bumped on every load: the table is remounted, because it did not show new rows on Refresh.
+  // Bumped when the entries change: the table is remounted, because it did not show new rows otherwise.
   const [version, setVersion] = useState(0);
+  const shownKey = useRef<string | null>(null);
 
-  const load = useCallback(async () => {
-    setRefreshing(true);
+  const fetchRows = useCallback(async () => {
     const result = await call<{ entries: AuditRow[] }>('getAudit');
-    setRefreshing(false);
     if (result.ok) {
-      setRows(result.entries);
-      setVersion((value) => value + 1);
+      // Same entries → no state change, so the background refresh does not flicker.
+      const key = changedKey(shownKey.current, result.entries);
+      if (key !== null) {
+        shownKey.current = key;
+        setRows(result.entries);
+        setVersion((value) => value + 1);
+      }
       setError(null);
     } else setError(result.error);
   }, []);
+  const load = useCallback(async () => {
+    setRefreshing(true);
+    await fetchRows();
+    setRefreshing(false);
+  }, [fetchRows]);
 
   useEffect(() => {
     if (active || rows === null) void load();
   }, [active, watch, load]);
+  useIdlePolling(active, lastActivityAt, fetchRows);
 
   if (error) {
     return (
@@ -1235,7 +1248,7 @@ const App = () => {
           <TeamsTab teams={teams} reload={reload} />
         </TabPanel>
         <TabPanel>
-          <AuditTab active={tab === 4} watch={watch} />
+          <AuditTab active={tab === 4} watch={watch} lastActivityAt={lastActivityAt} />
         </TabPanel>
         <TabPanel>
           <DemoTab onSeeded={reload} onMonitorQueued={watchContracts} />

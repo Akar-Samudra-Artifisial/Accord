@@ -206,7 +206,7 @@ export function previewChanges(
     const target = step ? String(step.values.toSprint) : item.toSprintId;
     changes.push(
       isProjectedSprint(item.toSprintId)
-        ? { kind: 'move-backlog', text: `Move ${item.key} to the backlog (${target} does not exist in Jira yet).` }
+        ? { kind: 'move-backlog', text: `Move ${item.key} to the backlog (no later sprint exists in Jira yet).` }
         : { kind: 'move-sprint', text: `Move ${item.key} to ${target}.` },
     );
   }
