@@ -50,26 +50,31 @@ forge install         # pick a Jira + Confluence developer site
 
 Accord is not listed on the Atlassian Marketplace; it is shared through an installation link.
 
-1. Open `https://developer.atlassian.com/console/install/b3ad0126-cc44-4b56-94d0-dc7e24ba391e?signature=AYABeEzpn10ES%2BvwhSBA%2F0lumlcAAAADAAdhd3Mta21zAEthcm46YXdzOmttczp1cy13ZXN0LTI6NzA5NTg3ODM1MjQzOmtleS83MDVlZDY3MC1mNTdjLTQxYjUtOWY5Yi1lM2YyZGNjMTQ2ZTcAuAECAQB4CxqLTo9l4lqXuFjNim1xJM%2Bp%2F3TVP9xHS2BrU5DRRucB16xqcgBTJ17T2WzStjig1wAAAH4wfAYJKoZIhvcNAQcGoG8wbQIBADBoBgkqhkiG9w0BBwEwHgYJYIZIAWUDBAEuMBEEDIKuKRhRHteE%2FM0yGQIBEIA7sGAs%2FjU2V9pLehLfFmp75JkkS8QjzzKbMEocHevSIXoLf5y9OFs15%2FWb7QOkpGpTms4wRCKD%2BzktEWcAB2F3cy1rbXMAS2Fybjphd3M6a21zOmV1LXdlc3QtMTo3MDk1ODc4MzUyNDM6a2V5LzQ2MzBjZTZiLTAwYzMtNGRlMi04NzdiLTYyN2UyMDYwZTVjYwC4AQICAHi9bVMAkme4qVQX1fQHo6ePw3H40A7cGfz7yrmSfBWMXgHOl2%2BujS7bCC2zsF0pO%2BmSAAAAfjB8BgkqhkiG9w0BBwagbzBtAgEAMGgGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQMObBebcRNq2X6dmJ1AgEQgDvcHXd12PAE0kcwi0uSA9v7%2FwpA9gGodjCRt0NixJRE7Rum%2BYYNbbP0fJJcuwcTFjrHltzigbbmC22TiwAHYXdzLWttcwBLYXJuOmF3czprbXM6dXMtZWFzdC0xOjcwOTU4NzgzNTI0MzprZXkvNmMxMjBiYTAtNGNkNS00OTg1LWI4MmUtNDBhMDQ5NTJjYzU3ALgBAgIAeDYASx0XCjkny4iLV6vz%2BKtEGSGT6kdt0QRpkn6D%2FlVEAXJgo%2FG0vdBIyuefQR%2FPtpoAAAB%2BMHwGCSqGSIb3DQEHBqBvMG0CAQAwaAYJKoZIhvcNAQcBMB4GCWCGSAFlAwQBLjARBAyfoVPZhZ7YNNaDrf8CARCAO31pwjwQFkc40y03jpUjUC5Zrv2e3fxER%2BKddXUtDtQpLkdIa4QdwHOxu3drCE5KFpLWtX0xaeCxM7p%2FAgAAAAAMAAAQAAAAAAAAAAAAAAAAAEnPVDGf9zgCKn19Mf2ffsn%2F%2F%2F%2F%2FAAAAAQAAAAAAAAAAAAAAAQAAADKPPDke6dH04WYzAka4pG9ghgogTNv1J7bkeOdSGFf6jIqhyWWqfh1ZNSGMge4B3yoQlELulCZCNIc0yMJoYJoEpmE%3D&product=jira&product=confluence`, pick your Jira site (with Confluence on the same site) and approve the requested
-   permissions. You need to be a Jira site admin for the demo steps below.
+1. Open `https://developer.atlassian.com/console/install/b3ad0126-cc44-4b56-94d0-dc7e24ba391e?signature=AYABeEzpn10ES%2BvwhSBA%2F0lumlcAAAADAAdhd3Mta21zAEthcm46YXdzOmttczp1cy13ZXN0LTI6NzA5NTg3ODM1MjQzOmtleS83MDVlZDY3MC1mNTdjLTQxYjUtOWY5Yi1lM2YyZGNjMTQ2ZTcAuAECAQB4CxqLTo9l4lqXuFjNim1xJM%2Bp%2F3TVP9xHS2BrU5DRRucB16xqcgBTJ17T2WzStjig1wAAAH4wfAYJKoZIhvcNAQcGoG8wbQIBADBoBgkqhkiG9w0BBwEwHgYJYIZIAWUDBAEuMBEEDIKuKRhRHteE%2FM0yGQIBEIA7sGAs%2FjU2V9pLehLfFmp75JkkS8QjzzKbMEocHevSIXoLf5y9OFs15%2FWb7QOkpGpTms4wRCKD%2BzktEWcAB2F3cy1rbXMAS2Fybjphd3M6a21zOmV1LXdlc3QtMTo3MDk1ODc4MzUyNDM6a2V5LzQ2MzBjZTZiLTAwYzMtNGRlMi04NzdiLTYyN2UyMDYwZTVjYwC4AQICAHi9bVMAkme4qVQX1fQHo6ePw3H40A7cGfz7yrmSfBWMXgHOl2%2BujS7bCC2zsF0pO%2BmSAAAAfjB8BgkqhkiG9w0BBwagbzBtAgEAMGgGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQMObBebcRNq2X6dmJ1AgEQgDvcHXd12PAE0kcwi0uSA9v7%2FwpA9gGodjCRt0NixJRE7Rum%2BYYNbbP0fJJcuwcTFjrHltzigbbmC22TiwAHYXdzLWttcwBLYXJuOmF3czprbXM6dXMtZWFzdC0xOjcwOTU4NzgzNTI0MzprZXkvNmMxMjBiYTAtNGNkNS00OTg1LWI4MmUtNDBhMDQ5NTJjYzU3ALgBAgIAeDYASx0XCjkny4iLV6vz%2BKtEGSGT6kdt0QRpkn6D%2FlVEAXJgo%2FG0vdBIyuefQR%2FPtpoAAAB%2BMHwGCSqGSIb3DQEHBqBvMG0CAQAwaAYJKoZIhvcNAQcBMB4GCWCGSAFlAwQBLjARBAyfoVPZhZ7YNNaDrf8CARCAO31pwjwQFkc40y03jpUjUC5Zrv2e3fxER%2BKddXUtDtQpLkdIa4QdwHOxu3drCE5KFpLWtX0xaeCxM7p%2FAgAAAAAMAAAQAAAAAAAAAAAAAAAAAEnPVDGf9zgCKn19Mf2ffsn%2F%2F%2F%2F%2FAAAAAQAAAAAAAAAAAAAAAQAAADKPPDke6dH04WYzAka4pG9ghgogTNv1J7bkeOdSGFf6jIqhyWWqfh1ZNSGMge4B3yoQlELulCZCNIc0yMJoYJoEpmE%3D&product=jira&product=confluence`, click "Get app", pick your Jira site and also tick **Confluence** for the same
+   site (it is not ticked by default; the charter pages live in Confluence), then approve the requested permissions.
+   You need to be a Jira site admin for the demo steps below.
 2. Open the Accord global page: Jira → Apps → Accord.
-3. Demo tab → "Seed demo data" → confirm. Accord creates two demo teams, Mobile and Payments (keys MOB/PAY, or free
-   alternatives such as ACMOB/ACPAY when those keys are taken), with Scrum boards, sprints, issues, charter pages in
-   Confluence and simulated throughput history. Wait until every step shows Done.
+3. Demo tab → "Seed demo data" → confirm with "Seed demo data". Accord creates two demo teams, Mobile and Payments
+   (keys MOB/PAY, or free alternatives such as ACMOB/ACPAY when those keys are taken), with Scrum boards, sprints,
+   issues, charter pages in Confluence and simulated throughput history. Wait until every step shows Done; the demo
+   controls below appear without a reload.
 4. Demo tab → "Make me the demo lead": you become the lead of both demo projects and the only approver of both
    charters.
-5. Demo tab → turn on "Demo mode" (allow the same approver for both teams). Without it, Accord enforces dual control
-   and a second person must approve for the other team. Demo mode applies only to requests between the two demo
-   projects; requests involving any other team always keep dual control.
-6. Open a Mobile issue → View app actions → Accord → create a dependency request to Payments (size, needed-by date,
-   cost class). Accord negotiates in two rounds; refresh until the deal sheet is ready.
-7. Open the deal sheet and approve the recommended option twice: once for Mobile, once for Payments. Accord creates
-   the deliverable issue in Payments, links it to the source issue and moves shifted work; the contract appears in the
-   Contracts tab.
+5. Demo tab → turn on the demo mode switch ("Allow the same approver for both teams"). Without it, Accord enforces
+   dual control and a second person must approve for the other team. Demo mode applies only to requests between the
+   two demo projects; requests involving any other team always keep dual control.
+6. Open a Mobile issue → View app actions → Accord → "New request with Accord". Pick Payments under "Team to ask", fill in the
+   required "What do you need?" (for example "Refund API") and "Needed by", optionally size and cost of delay, then
+   "Send request". Accord negotiates in two rounds; the deal sheet is usually ready within a few seconds.
+7. "Open deal sheet" and click "Approve as Mobile lead" and "Approve as Payments lead" on the recommended option.
+   Accord creates the deliverable issue in Payments, links it to the source issue and moves shifted work; the contract
+   appears in the Contracts tab as On track.
 8. Demo tab → "Add critical bugs to Payments": the monitor runs, the contract turns At risk and Accord opens a
-   renegotiation (Inbox tab); approve the new deal sheet the same way.
+   renegotiation (Inbox tab); approve the new deal sheet the same way, or use "Reset demo bugs" to move the bugs to
+   the backlog and bring the contract back On track.
 9. Rovo: open Rovo chat and pick "Accord Team Delegate" or "Accord Broker" (for example "What do we owe other
    teams this sprint?"). MCP: Rovo Studio → Create agent → Tools → Add tools → Connected apps → Accord (see below).
+   Rovo agents and MCP need a site with Rovo; the rest works without it.
 10. Turn demo mode off again when you are done, or use "Clean demo data" to start over (the clean keeps demo mode as
     it is).
 
@@ -131,7 +136,7 @@ The scope list is unchanged since the first installation, so updates never need 
 - [x] Replaced the environment variable for a single-account demo with the per-installation demo mode switch
       (Demo tab, admins only, off by default, audited). No Forge variables are needed.
 - [x] Scopes unchanged, so existing installations need no upgrade.
-- [ ] Deploy to production and create the installation link (separate approval).
+- [x] Deployed to production and created the installation link (see "Install (judges)").
 
 ## Accord tools over MCP (`rovo:mcp`, Preview)
 
@@ -152,6 +157,9 @@ only sees what they may see in Jira. There is no approve tool: deal sheets are a
 - Capacity from the last 6 sprints: realistic = median, pessimistic = second lowest; fewer than 4 sprints is flagged as limited data.
 - Size S/M/L = 1/3/6 issues. Cost of delay weights: fixed-date 3, standard 2, intangible 1.
 - Per sprint, room for other teams = min(pessimistic − committed, floor(max share × pessimistic)).
+- No option is earlier than the contract monitor projects it: all open work of the active and next sprint plus the
+  provider's other open contracts come first, at pessimistic throughput. So a new contract starts On track. A shift
+  may move shiftable work of the active or next sprint out of that window to bring the date forward.
 - Options: on time, on time with shifting (cheapest shiftable work first, red lines never touched), partial, later, reject.
 - Sorted by meets-need, then shift cost, then latest date; at most 4; the first is recommended.
 - Every number in an explanation comes from the option's trace values.
@@ -167,4 +175,6 @@ only sees what they may see in Jira. There is no approve tool: deal sheets are a
 - [x] M5 — User permission checks and English copy
 - [x] M6 — Renegotiation, escalation, request suggestions from Jira links, MCP tools, network map, clean demo data
 - [x] M7 — Production preparation (1.0.0): diagnostics and unused queue removed, demo mode switch, install guide
-- [ ] Production deploy and installation link (separate approval)
+- [x] Production deploy and installation link
+- [ ] Judge-path fixes from the fresh-site test (new contracts on track, at least two options); in development,
+      production deploy pending approval

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { computeCapacity, explainOption, planOptions } from '../../src/planner';
-import type { PlannerOption, PlannerResult } from '../../src/planner';
+import { SIZE_ISSUES, computeCapacity, explainOption, planOptions } from '../../src/planner';
+import type { PlannerInput, PlannerOption, PlannerResult, Size, WorkItem } from '../../src/planner';
+import { projectContract } from '../../src/planner/projection';
 import { formatDate } from '../../src/format/dates';
 import { CHARTER, baseInput, fillers, item, shiftScenario } from './fixtures';
 
@@ -37,6 +38,97 @@ describe('planOptions', () => {
     expect(shift?.dateRange?.max).toBe('2026-11-29');
     expect(shift?.shifted.map((s) => s.key)).not.toContain('PAY-3');
     expect(explainOption(plain[0])).toContain('As the contract monitor projects it, 20 issues of open sprint work');
+  });
+
+  it('monitor rule: shiftable counted work of the next sprint (after the need) moves out of the window, never into it', () => {
+    // 8 non-shiftable issues in Sprint 41, 1 Low in Sprint 42; need by Nov 26 → only Sprint 41 is before the need.
+    const commitments = [...fillers('PAY', 's1', 8), item('PAY-20', 's2', { priority: 'Low', costClass: 'intangible' })];
+    const input = baseInput({
+      request: { size: 'S', neededBy: '2026-11-26', costClass: 'standard' },
+      commitments,
+      workAhead: { issues: 9, countedKeys: commitments.map((c) => c.key), countedSprintIds: ['s1', 's2'] },
+    });
+    const result = planOptions(input);
+    // 9 ahead + 1 at 9 per sprint → Sprint 42 (Nov 29) unless PAY-20 leaves Sprint 41/42.
+    expect(result.options.map((o) => [o.kind, o.dateRange.max])).toEqual([
+      ['on-time-with-shift', '2026-11-15'],
+      ['later', '2026-11-29'],
+    ]);
+    expect(result.options[0].shifted).toEqual([{ key: 'PAY-20', costClass: 'intangible', toSprintId: 's3' }]);
+    // Without the monitor rule, Sprint 42 work after the need is no candidate.
+    expect(planOptions({ ...input, workAhead: undefined }).options.map((o) => o.kind)).toEqual(['on-time']);
+  });
+
+  describe('monitor order of contracts (workAhead.contracts)', () => {
+    type Existing = { agreedDateMax: string; size: Size };
+    /** Monitor statuses after applying `option`: contracts by agreed latest date, existing first on ties. */
+    const statusesAfterApply = (input: PlannerInput, existing: Existing[], option: PlannerOption) => {
+      const all = [
+        ...existing.map((c, i) => ({ id: `old-${i}`, order: i, ...c })),
+        { id: 'new', order: existing.length, agreedDateMax: option.dateRange.max, size: input.request.size },
+      ].sort((a, b) => a.agreedDateMax.localeCompare(b.agreedDateMax) || a.order - b.order);
+      const base = input.workAhead!.issues - existing.reduce((sum, c) => sum + SIZE_ISSUES[c.size], 0);
+      return Object.fromEntries(
+        all.map((c, i) => [
+          c.id,
+          projectContract({
+            sprints: input.sprints,
+            today: input.today,
+            pessimistic: input.capacity.pessimistic,
+            committedIssues: base,
+            earlierContractSizes: all.slice(0, i).map((e) => e.size),
+            size: c.size,
+            agreedDateMax: c.agreedDateMax,
+          }).status,
+        ]),
+      );
+    };
+    const withContracts = (existing: Existing[], commitments: WorkItem[], counted: WorkItem[], extra: Partial<PlannerInput> = {}) =>
+      baseInput({
+        request: { size: 'S', neededBy: '2026-11-15', costClass: 'standard' },
+        commitments,
+        workAhead: {
+          issues: counted.length + existing.reduce((sum, c) => sum + SIZE_ISSUES[c.size], 0),
+          countedKeys: counted.map((c) => c.key),
+          countedSprintIds: ['s1', 's2'],
+          contracts: existing.map((c) => ({ agreedDateMax: c.agreedDateMax, issues: SIZE_ISSUES[c.size] })),
+        },
+        ...extra,
+      });
+
+    it('a contract agreed later is not ahead: the new request gets the earlier date and the old contract stays on track', () => {
+      const counted = fillers('PAY', 's1', 3);
+      const existing: Existing[] = [{ agreedDateMax: '2026-12-27', size: 'L' }];
+      const input = withContracts(existing, counted, counted);
+      const [best] = planOptions(input).options;
+      // 3 counted + this 1 at 9 per sprint → Sprint 41; the L contract (Dec 27) is pushed back: 3 + 1 + 6 → Nov 29.
+      expect([best.kind, best.dateRange.max]).toEqual(['on-time', '2026-11-15']);
+      expect(statusesAfterApply(input, existing, best)).toEqual({ new: 'on-track', 'old-0': 'on-track' });
+      // Counting every contract as ahead (no order) misses Nov 15: 3 + 6 + 1 → Nov 29.
+      const { contracts: _ignored, ...unordered } = input.workAhead!;
+      expect(planOptions({ ...input, workAhead: unordered }).options.map((o) => o.kind)).not.toContain('on-time');
+    });
+
+    it('an earlier date that would push an on-track contract at risk is not offered; deliverables in a sprint stay put', () => {
+      const counted = fillers('PAY', 's1', 3);
+      // 3 counted + 6 + 6 + 3 = 18 = two sprints at 9: on track by Nov 29 with no slack left.
+      const existing: Existing[] = [
+        { agreedDateMax: '2026-11-29', size: 'L' },
+        { agreedDateMax: '2026-11-29', size: 'L' },
+        { agreedDateMax: '2026-11-29', size: 'M' },
+      ];
+      // The first contract's deliverable already sits in Sprint 42 (low priority, otherwise shiftable).
+      const deliverable = item('PAY-50', 's2', { priority: 'Low', costClass: 'intangible' });
+      const input = withContracts(existing, [...counted, deliverable], counted);
+      input.workAhead!.pinnedKeys = ['PAY-50'];
+      const options = planOptions(input).options;
+      // Nov 15 fits the room (3 + 1 ≤ 9) but puts all three contracts at risk (19 > 18): next date that holds is Dec 13.
+      expect(options.map((o) => [o.kind, o.dateRange.max])).toEqual([['later', '2026-12-13']]);
+      expect(options.flatMap((o) => o.shifted.map((s) => s.key))).not.toContain('PAY-50');
+      for (const option of options) {
+        expect(Object.values(statusesAfterApply(input, existing, option)).every((s) => s === 'on-track')).toBe(true);
+      }
+    });
   });
 
   it('shifts the cheapest shiftable work when capacity is short', () => {

@@ -50,8 +50,13 @@ interface Context {
   capR: number;
   baseTrace: TraceStep[];
   shareRule: string;
-  /** Issues ahead under the monitor rule (input.workAhead), undefined without it. */
+  /**
+   * Issues ahead under the monitor rule (input.workAhead) other than the contracts in `contracts`,
+   * undefined without it.
+   */
   ahead: number | undefined;
+  /** The provider's other open contracts in monitor order; which are ahead depends on the option date. */
+  contracts: ReadonlyArray<{ agreedDateMax: IsoDate; issues: number }>;
 }
 
 type Draft = Omit<PlannerOption, 'recommended' | 'consequences'>;
@@ -75,6 +80,10 @@ function validateInput(input: PlannerInput): void {
   }
   if (input.workAhead && !(Number.isInteger(input.workAhead.issues) && input.workAhead.issues >= 0)) {
     throw new Error(`Invalid workAhead issues ${input.workAhead.issues}: expected a non-negative integer`);
+  }
+  const contractIssues = (input.workAhead?.contracts ?? []).reduce((sum, c) => sum + c.issues, 0);
+  if (input.workAhead && contractIssues > input.workAhead.issues) {
+    throw new Error(`Invalid workAhead contracts: ${contractIssues} issues exceed workAhead issues ${input.workAhead.issues}`);
   }
   if (input.variation && !(Number.isInteger(input.variation.days) && input.variation.days > 0)) {
     throw new Error(`Invalid variation days ${input.variation.days}: expected a positive integer`);
@@ -175,15 +184,47 @@ function rangeFor(
   if (pIndex < 0) return undefined;
   let rIndex = reachIndex(committed, capacity.realistic, ctx.capR, amount, limit);
   if (ahead !== undefined) {
-    // Never earlier than the monitor projects the work ahead plus this request.
-    const floorP = sequentialFinishIndex(capacity.pessimistic, ahead + amount, limit);
-    if (floorP < 0) return undefined;
-    pIndex = Math.max(pIndex, floorP);
-    const floorR = sequentialFinishIndex(capacity.realistic, ahead + amount, limit);
+    // Never earlier than the monitor projects the work ahead plus this request. Which contracts are ahead
+    // depends on the agreed date (monitor order), so search the earliest sprint end that is consistent and
+    // keeps every pushed-back contract that is on track today on track.
+    let total = -1;
+    for (; pIndex < limit; pIndex += 1) {
+      const date = ctx.slots[pIndex].sprint.endDate;
+      total = ahead + contractsAhead(ctx, date) + amount;
+      const floorP = sequentialFinishIndex(capacity.pessimistic, total, limit);
+      if (floorP < 0) return undefined;
+      if (floorP <= pIndex && keepsOthersOnTrack(ctx, ahead, date)) break;
+    }
+    if (pIndex >= limit) return undefined;
+    const floorR = sequentialFinishIndex(capacity.realistic, total, limit);
     if (rIndex >= 0) rIndex = Math.max(rIndex, floorR >= 0 ? floorR : pIndex);
   }
   const minIndex = rIndex >= 0 && rIndex < pIndex ? rIndex : pIndex;
   return { min: ctx.slots[minIndex].sprint.endDate, max: ctx.slots[pIndex].sprint.endDate };
+}
+
+/** Issues of the other contracts the monitor counts ahead of a request agreed by `date` (ties: existing first). */
+function contractsAhead(ctx: Context, date: IsoDate): number {
+  return ctx.contracts.reduce((sum, c) => (c.agreedDateMax <= date ? sum + c.issues : sum), 0);
+}
+
+/**
+ * A request agreed by `date` must not turn an on-track contract at risk: every contract with the same or a
+ * later agreed date (ties checked too, whichever id the monitor puts first) that the monitor projects on
+ * track without this request stays on track with it.
+ */
+function keepsOthersOnTrack(ctx: Context, ahead: number, date: IsoDate): boolean {
+  const { pessimistic } = ctx.input.capacity;
+  const onTrack = (issues: number, by: IsoDate) => {
+    const index = sequentialFinishIndex(pessimistic, issues, ctx.slots.length);
+    return index >= 0 && ctx.slots[index].sprint.endDate <= by;
+  };
+  for (const contract of ctx.contracts) {
+    if (contract.agreedDateMax < date) continue;
+    const before = ahead + contractsAhead(ctx, contract.agreedDateMax);
+    if (onTrack(before, contract.agreedDateMax) && !onTrack(before + ctx.requested, contract.agreedDateMax)) return false;
+  }
+  return true;
 }
 
 function sprintSources(slots: readonly Slot[], limit: number): TraceSource[] {
@@ -221,14 +262,21 @@ function shiftOption(ctx: Context, limit: number): ShiftOutcome {
   const candidates: { item: WorkItem; slotIndex: number; rule: string }[] = [];
   const kept: { item: WorkItem; slotIndex: number; rule: string }[] = [];
   const pinned = new Set(ctx.input.workAhead?.pinnedKeys ?? []);
-  for (let i = 0; i < limit; i += 1) {
+  const counted = new Set(ctx.input.workAhead?.countedKeys ?? []);
+  const countedSprints = new Set(ctx.input.workAhead?.countedSprintIds ?? []);
+  for (let i = 0; i < ctx.slots.length; i += 1) {
+    // Under the monitor rule, counted work after the needed-by date (the next sprint) is also ahead of the
+    // request: moving it out of the counted sprints lowers the projection (it frees no room before the need).
+    const aheadOnly = i >= limit;
+    if (aheadOnly && (ctx.ahead === undefined || !countedSprints.has(ctx.slots[i].sprint.id))) continue;
     for (const item of ctx.slots[i].items) {
       if (pinned.has(item.key)) continue;
+      if (aheadOnly && !counted.has(item.key)) continue;
       const shiftRule = firstMatchingRule(item, charter.shiftable);
       if (!shiftRule) continue;
       const redLine = firstMatchingRule(item, charter.redLines);
       if (redLine) {
-        kept.push({ item, slotIndex: i, rule: describeRule(redLine) });
+        if (!aheadOnly) kept.push({ item, slotIndex: i, rule: describeRule(redLine) });
       } else {
         candidates.push({ item, slotIndex: i, rule: describeRule(shiftRule) });
       }
@@ -241,18 +289,18 @@ function shiftOption(ctx: Context, limit: number): ShiftOutcome {
   const committed = [...ctx.committed];
   const moves: { item: WorkItem; from: number; to: number; rule: string }[] = [];
   const base = capacity.pessimistic;
-  const counted = new Set(ctx.input.workAhead?.countedKeys ?? []);
-  const countedSprints = new Set(ctx.input.workAhead?.countedSprintIds ?? []);
   let ahead = ctx.ahead;
   const fits = () =>
     sumUsable(committed, base, ctx.capP, limit) >= ctx.requested &&
-    (ahead === undefined || sequentialFinishIndex(base, ahead + ctx.requested, limit) >= 0);
+    (ahead === undefined || rangeFor(ctx, committed, ctx.requested, limit, ahead) !== undefined);
   for (const candidate of candidates) {
     if (fits()) break;
     const size = itemSize(candidate.item);
     const from = candidate.slotIndex;
     let to = -1;
     for (let t = limit; t < ctx.slots.length; t += 1) {
+      // Under the monitor rule a counted sprint still counts the moved issue as work ahead.
+      if (ahead !== undefined && countedSprints.has(ctx.slots[t].sprint.id)) continue;
       if (base - committed[t] >= size) {
         to = t;
         break;
@@ -472,7 +520,10 @@ export function planOptions(input: PlannerInput): PlannerResult {
     ),
   );
 
-  const ctx: Context = { input, slots, committed, requested, neededBy, capP, capR, baseTrace, shareRule, ahead: input.workAhead?.issues };
+  const contracts = input.workAhead?.contracts ?? [];
+  const contractIssues = contracts.reduce((sum, c) => sum + c.issues, 0);
+  const ahead = input.workAhead ? input.workAhead.issues - contractIssues : undefined;
+  const ctx: Context = { input, slots, committed, requested, neededBy, capP, capR, baseTrace, shareRule, ahead, contracts };
   const drafts: Draft[] = [];
   const onTime = onTimeOption(ctx, limit);
   if (onTime) {

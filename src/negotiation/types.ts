@@ -252,9 +252,10 @@ export interface NegotiationDeps {
     evaluateProvider(providerTeamId: string): Promise<void>;
     /**
      * Work the provider finishes before `contractId` under the monitor rule, with that contract placed after
-     * every other open contract; null without capacity data or monitored contracts.
+     * every other open contract; `null` contract id = a new request (after every open contract). Null without
+     * capacity data.
      */
-    workAhead(providerTeamId: string, contractId: number): Promise<RenegotiationWorkAhead | null>;
+    workAhead(providerTeamId: string, contractId: number | null): Promise<RenegotiationWorkAhead | null>;
   };
   today: () => IsoDate;
   /**

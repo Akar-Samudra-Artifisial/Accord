@@ -406,6 +406,8 @@ const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>;
     }
     setRunning(false);
     await onSeeded();
+    // The lead and demo mode controls depend on the demo projects the seed just created.
+    await Promise.all([loadLeadState(), loadDemoMode()]);
   };
 
   return (
@@ -1106,7 +1108,8 @@ interface AuditRow {
   summary: string;
 }
 
-const AuditTab = () => {
+/** Reloads when the tab is selected and after decisions or demo actions (`watch`), not only on Refresh. */
+const AuditTab = ({ active, watch }: { active: boolean; watch: number }) => {
   const [rows, setRows] = useState<AuditRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -1125,8 +1128,8 @@ const AuditTab = () => {
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (active || rows === null) void load();
+  }, [active, watch, load]);
 
   if (error) {
     return (
@@ -1232,7 +1235,7 @@ const App = () => {
           <TeamsTab teams={teams} reload={reload} />
         </TabPanel>
         <TabPanel>
-          <AuditTab />
+          <AuditTab active={tab === 4} watch={watch} />
         </TabPanel>
         <TabPanel>
           <DemoTab onSeeded={reload} onMonitorQueued={watchContracts} />
