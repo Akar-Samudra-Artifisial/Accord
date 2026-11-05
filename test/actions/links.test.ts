@@ -72,6 +72,8 @@ describe('site links', () => {
       deliverableIssueUrl: null,
     });
     expect(requestLinks(links, 'ACMOB-1').url).toBe(`${SITE}/browse/ACMOB-1`);
+    // A source issue the viewer cannot browse has no link.
+    expect(requestLinks(links, null)).toEqual({ url: null, sourceIssueUrl: null });
   });
 
   it('refuses a base URL that is not absolute https', () => {

@@ -19,9 +19,10 @@ import {
   renegotiationsOfParents,
   requestsForIssue,
   requestsForTeams,
+  type AuditEntry,
 } from '../negotiation/store';
-import { auditTimeline, toAuditRow, type AuditRow } from '../negotiation/audit-view';
-import { buildDealSheet, redact, summarize, type SummaryExtras } from '../negotiation/views';
+import { auditIssueKeys, auditTimeline, toAuditRow, type AuditRow } from '../negotiation/audit-view';
+import { buildDealSheet, redact, redactKeys, summarize, type SummaryExtras } from '../negotiation/views';
 import { KIND_LABEL, type Side } from '../negotiation/delegates';
 import type { Principal } from '../atlassian/http';
 import { formatDateRange } from '../format/dates';
@@ -368,9 +369,16 @@ export async function inbox(accountId: string | undefined) {
   // Viewer filter in SQL, before the limit.
   const found = await requestsForTeams(myTeams, ['awaiting-approval', 'negotiating', 'approved', 'failed', 'rejected'], 50);
   const ids = found.map((request) => request.id);
-  const [approvals, extras] = await Promise.all([approvalsByRequest(ids), summaryExtras(ids)]);
+  const [approvals, extras, visible] = await Promise.all([
+    approvalsByRequest(ids),
+    summaryExtras(ids),
+    // A provider approver may not browse the requester's source issue (NFR-3), checked as the user.
+    visibleIssueKeys(found.map((request) => request.sourceIssueKey), 'user'),
+  ]);
   return found
-    .map((request) => summarize(request, teams, viewerSides(request, approvers, accountId), approvals.get(request.id) ?? [], extras(request.id)))
+    .map((request) =>
+      summarize(request, teams, viewerSides(request, approvers, accountId), approvals.get(request.id) ?? [], extras(request.id), visible.has(request.sourceIssueKey)),
+    )
     .sort((a, b) => b.pendingFor.length - a.pendingFor.length);
 }
 
@@ -419,8 +427,12 @@ export async function contracts(accountId: string | undefined, teamKey?: string,
   if (teamKey && !team) throw new NegotiationError(`Team ${teamKey} is not registered in Accord.`);
   const approvers = await approverMap(teams);
   const rows = await listContracts(team?.id);
-  const needsCheck = rows.filter(({ request }) => viewerSides(request, approvers, accountId).length === 0);
-  const keys = needsCheck.flatMap(({ request, contract }) => [request.sourceIssueKey, ...(contract.deliverableIssueKey ? [contract.deliverableIssueKey] : [])]);
+  // Source and deliverable keys are checked for every row: a team lead without browse permission on the other
+  // team's project still sees the contract and its title, but not that project's issue key (NFR-3).
+  const keys = [
+    ...rows.map(({ request }) => request.sourceIssueKey),
+    ...rows.flatMap(({ contract }) => (contract.deliverableIssueKey ? [contract.deliverableIssueKey] : [])),
+  ];
   const visible = keys.length ? await visibleIssueKeys(keys, as) : new Set<string>();
   const shown = rows.filter(
     ({ request, contract }) =>
@@ -444,15 +456,15 @@ export async function contracts(accountId: string | undefined, teamKey?: string,
     const replacementContract = replacement ? contractOf.get(replacement.requestId) : undefined;
     // Per-field redaction: a viewer on neither side sees only the issues they can browse (checked as the user).
     const party = viewerSides(request, approvers, accountId).length > 0;
-    const sourceVisible = party || visible.has(request.sourceIssueKey);
-    const deliverableVisible = contract.deliverableIssueKey !== null && (party || visible.has(contract.deliverableIssueKey));
+    const sourceVisible = visible.has(request.sourceIssueKey);
+    const deliverableVisible = contract.deliverableIssueKey !== null && visible.has(contract.deliverableIssueKey);
     return {
       contractId: contract.id,
       requestId: request.id,
       // Side of the filtered team (or, without a filter, of the viewer's team); null when the viewer is on neither.
       role: contractRole(request, team, viewerSides(request, approvers, accountId)),
       // The title is written from the source issue, so it follows the source issue's visibility.
-      title: sourceVisible ? request.title : RESTRICTED,
+      title: party || sourceVisible ? request.title : RESTRICTED,
       requester: teams.get(request.requesterTeamId)?.name ?? request.requesterTeamId,
       requesterTeamKey: teams.get(request.requesterTeamId)?.teamKey ?? null,
       provider: teams.get(request.providerTeamId)?.name ?? request.providerTeamId,
@@ -704,10 +716,10 @@ export async function auditTrail(accountId: string | undefined): Promise<AuditRo
   );
   const teamIds = visible.filter((id): id is string => id !== null);
   const requests = await requestsForTeams(teamIds, ALL_STATUSES, 100);
-  const titles = new Map(requests.map((request) => [request.id, request.title]));
-  const contractTitles = new Map<string, string>();
+  const titles = new Map(requests.map((request) => [request.id, request]));
+  const contractTitles = new Map<string, DependencyRequest>();
   for (const { contract, request } of await contractsForRequests([...titles.keys()])) {
-    contractTitles.set(String(contract.id), request.title);
+    contractTitles.set(String(contract.id), request);
   }
   // A demo clean starts the trail over: older entries stay in audit_log but are hidden here.
   const cleaned = await lastDemoClean();
@@ -716,16 +728,14 @@ export async function auditTrail(accountId: string | undefined): Promise<AuditRo
   const approvedIds = entries.filter((entry) => entry.action === 'approved').map((entry) => Number(approvedOptionId(entry.payload)));
   const options = await optionsByIds(approvedIds);
   const approverIds = new Set([...approvers.values()].flat());
-  return entries.map((entry) =>
+  const requestOf = (item: AuditEntry) =>
+    item.entityType === 'contract' ? contractTitles.get(item.entityId) : item.entityType === 'demo' ? undefined : titles.get(item.entityId);
+  const rows = entries.map((entry) =>
     toAuditRow(entry, {
       viewerAccountId: accountId,
       approverIds,
       subjectOf: (item) =>
-        item.entityType === 'demo'
-          ? item.entityId === 'mode'
-            ? 'Demo mode'
-            : 'Demo data'
-          : ((item.entityType === 'contract' ? contractTitles.get(item.entityId) : titles.get(item.entityId)) ?? 'Unknown request'),
+        item.entityType === 'demo' ? (item.entityId === 'mode' ? 'Demo mode' : 'Demo data') : (requestOf(item)?.title ?? 'Unknown request'),
       optionLabel: (optionId) => {
         const option = options.get(optionId);
         if (!option) return null;
@@ -734,4 +744,22 @@ export async function auditTrail(accountId: string | undefined): Promise<AuditRo
       },
     }),
   );
+  // Summaries can name the deliverable ("linked existing PAY-33", renegotiation notes): keys the viewer
+  // cannot browse are redacted like in the deal sheet (NFR-3), checked as the user. Like the Contracts list,
+  // a viewer on neither side sees a request title only when they can browse its source issue.
+  const nonParty = (request: DependencyRequest | undefined): request is DependencyRequest =>
+    request !== undefined && viewerSides(request, approvers, accountId).length === 0;
+  const keys = auditIssueKeys(rows);
+  const sources = entries.map(requestOf).filter(nonParty).map((request) => request.sourceIssueKey);
+  if (keys.length === 0 && sources.length === 0) return rows;
+  const visibleKeys = await visibleIssueKeys([...keys, ...sources], 'user');
+  const hidden = keys.filter((key) => !visibleKeys.has(key));
+  return rows.map((row, index) => {
+    const request = requestOf(entries[index]);
+    return {
+      ...row,
+      subject: nonParty(request) && !visibleKeys.has(request.sourceIssueKey) ? RESTRICTED : row.subject,
+      summary: redactKeys(row.summary, hidden),
+    };
+  });
 }

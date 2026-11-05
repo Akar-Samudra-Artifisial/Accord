@@ -43,7 +43,8 @@ export interface OptionView {
 }
 
 export interface DealSheetView {
-  request: Omit<DependencyRequest, 'createdBy'>;
+  /** `sourceIssueKey` is null (and `title` "Restricted" for a viewer on neither side) when the viewer cannot browse the source issue. */
+  request: Omit<DependencyRequest, 'createdBy' | 'sourceIssueKey'> & { sourceIssueKey: string | null };
   requester: { teamKey: string; name: string };
   provider: { teamKey: string; name: string; projectKey: string };
   options: OptionView[];
@@ -112,9 +113,16 @@ export function appliedChanges(
   option: OptionView,
   contract: Contract,
   provenance: AppliedProvenance = { deliverableCreated: true, linkCreated: true },
+  /** Issue keys the viewer may browse; null skips redaction. */
+  visible: ReadonlySet<string> | null = null,
 ): AppliedChange[] {
+  if (!contract.deliverableIssueKey) return [];
   const deliverable = contract.deliverableIssueKey;
-  if (!deliverable) return [];
+  const deliverableVisible = !visible || visible.has(deliverable);
+  const deliverableKeys = deliverableVisible ? [deliverable] : [];
+  // The source issue lives in the requester project: a provider approver may not browse it either.
+  const sourceKeys = !visible || visible.has(request.sourceIssueKey) ? [request.sourceIssueKey] : [];
+  const hidden = [deliverable, request.sourceIssueKey].filter((key) => visible && !visible.has(key));
   const range = formatDateRange(contract.agreedDateMin, contract.agreedDateMax);
   const due = formatDate(contract.agreedDateMax);
   const changes: AppliedChange[] = [
@@ -123,14 +131,14 @@ export function appliedChanges(
       text: provenance.deliverableCreated
         ? `Created ${deliverable} "${request.title}" in ${providerProjectKey}, due ${due}.`
         : `Linked existing ${deliverable} "${request.title}" in ${providerProjectKey} and moved its due date to ${due}.`,
-      issueKeys: [deliverable],
+      issueKeys: deliverableKeys,
     },
     {
       kind: 'link',
       text: provenance.linkCreated
         ? `Linked ${deliverable} as blocking ${request.sourceIssueKey}.`
         : `${deliverable} already blocked ${request.sourceIssueKey}; no new link.`,
-      issueKeys: [deliverable, request.sourceIssueKey],
+      issueKeys: [...deliverableKeys, ...sourceKeys],
     },
   ];
   const sprint = option.deliverableSprint;
@@ -140,26 +148,28 @@ export function appliedChanges(
       text: sprint.inJira
         ? `Planned ${deliverable} in ${sprint.name}.`
         : `${provenance.deliverableCreated ? 'Kept' : 'Moved'} ${deliverable} ${provenance.deliverableCreated ? 'in' : 'to'} the backlog (planned for ${sprint.name}, which does not exist in Jira yet).`,
-      issueKeys: [deliverable],
+      issueKeys: deliverableKeys,
     });
   }
   for (const item of option.shifted) {
-    const visible = item.key !== RESTRICTED;
+    const itemVisible = item.key !== RESTRICTED;
     changes.push({
       kind: item.toBacklog ? 'move-backlog' : 'move-sprint',
       text: item.toBacklog ? `Moved ${item.key} to the backlog.` : `Moved ${item.key} to ${item.toSprint}.`,
-      issueKeys: visible ? [item.key] : [],
+      issueKeys: itemVisible ? [item.key] : [],
     });
   }
   changes.push({
     kind: 'comment',
     text: `Commented on ${request.sourceIssueKey} and ${deliverable} with the agreed dates ${range}.`,
-    issueKeys: [request.sourceIssueKey, deliverable],
+    issueKeys: [...sourceKeys, ...deliverableKeys],
   });
-  return changes;
+  return changes.map((change) => ({ ...change, text: redactKeys(change.text, hidden) }));
 }
 
 const RESTRICTED = 'a restricted issue';
+/** Shown instead of a request title the viewer may not read (same as the Contracts list). */
+export const RESTRICTED_TITLE = 'Restricted';
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -176,11 +186,32 @@ export function redact(text: string, trace: readonly TraceStep[], visible: Reado
     const key = String(step.values.key);
     if (visible.has(key)) continue;
     if (step.values.summary !== undefined) {
-      result = result.replace(keyPattern(key, escapeRegExp(` (${String(step.values.summary)})`)), RESTRICTED);
+      result = replaceKey(result, key, escapeRegExp(` (${String(step.values.summary)})`));
     }
-    result = result.replace(keyPattern(key), RESTRICTED);
+    result = replaceKey(result, key);
   }
   return result;
+}
+
+/**
+ * Replaces one whole key (plus `suffix`) with a label that keeps the sentence grammatical:
+ * "the existing deliverable (restricted)" after "existing", "contract for a restricted issue" after
+ * "contract", "A restricted issue" at the start of a sentence, "a restricted issue" elsewhere.
+ */
+function replaceKey(text: string, key: string, suffix = ''): string {
+  const k = keyPattern(key, suffix).source;
+  return text
+    // A link to the issue is dropped whole (never left as a broken "/browse/a restricted issue").
+    .replace(new RegExp(`(?:https?://[^\\s"'<>()]*)?/browse/${escapeRegExp(key)}(?![0-9])(?:[?#/][^\\s"'<>()]*[^\\s"'<>().,;:!?])?`, 'g'), RESTRICTED)
+    .replace(new RegExp(`\\b(?:the )?existing ${k}`, 'g'), 'the existing deliverable (restricted)')
+    .replace(new RegExp(`\\bcontract ${k}`, 'g'), 'contract for a restricted issue')
+    .replace(new RegExp(`(^|[.!?]\\s+)${k}`, 'g'), '$1A restricted issue')
+    .replace(keyPattern(key, suffix), RESTRICTED);
+}
+
+/** Replaces whole keys in `hidden` (issues the viewer cannot browse), see `replaceKey`. */
+export function redactKeys(text: string, hidden: readonly string[]): string {
+  return hidden.reduce((result, key) => replaceKey(result, key), text);
 }
 
 /** Issue sources of restricted issues lose their key as well. */
@@ -196,10 +227,12 @@ function toOptionView(
   variationRoundId: number | null,
   visible: ReadonlySet<string> | null,
   existingDeliverable: string | null,
+  /** Hides the source issue/deliverable keys (and title) the viewer may not read. */
+  hide: (text: string) => string = (text) => text,
 ): OptionView {
   const consequences = buildConsequences(option.kind, option.trace);
   const shiftSteps = option.trace.filter((step) => step.step === 'shift');
-  const r = (text: string) => redact(text, option.trace, visible);
+  const r = (text: string) => hide(redact(text, option.trace, visible));
   const deliverableSprint = deliverableSprintOf(option.trace);
   return {
     id: option.id,
@@ -276,14 +309,31 @@ export async function buildDealSheet(input: DealSheetInput): Promise<DealSheetVi
   const variation = options.filter((option) => requesterRound && option.roundId === requesterRound.id);
 
   const shiftedKeys = options.flatMap((option) => option.trace.filter((s) => s.step === 'shift' || s.step === 'red-line-kept').map((s) => String(s.values.key)));
-  const visible = await input.visibleKeys(shiftedKeys);
+  // Deliverables (provider project) and the source issue (requester project) follow the viewer's browse
+  // permission too, also for approvers (NFR-3).
+  const namedKeys = [request.sourceIssueKey, contract?.deliverableIssueKey, parentContract?.deliverableIssueKey].filter((key): key is string => Boolean(key));
+  const visible = await input.visibleKeys([...shiftedKeys, ...namedKeys]);
+  const hiddenKeys = visible ? [...new Set(namedKeys)].filter((key) => !visible.has(key)) : [];
+  const shownKey = (key: string | null) => (key && hiddenKeys.includes(key) ? null : key);
+  // The title may come from the source issue summary: like the Contracts list, a viewer on neither side who
+  // cannot browse the source issue does not see it (approvers keep it, they decide on it).
+  const titleHidden = input.viewerSides.length === 0 && hiddenKeys.includes(request.sourceIssueKey);
+  const hide = (text: string) => {
+    const keysHidden = redactKeys(text, hiddenKeys);
+    return titleHidden && request.title ? keysHidden.split(request.title).join(RESTRICTED_TITLE) : keysHidden;
+  };
   const variationRoundId = requesterRound?.id ?? null;
   const state = approvalState(approvals, request.requesterTeamId, request.providerTeamId);
   const sideOf = (teamId: string): Side => (teamId === request.requesterTeamId ? 'requester' : 'provider');
 
-  const { createdBy, ...publicRequest } = request;
+  const { createdBy, ...ownRequest } = request;
+  const publicRequest = {
+    ...ownRequest,
+    title: titleHidden ? RESTRICTED_TITLE : request.title,
+    sourceIssueKey: shownKey(request.sourceIssueKey),
+  };
   const existingDeliverable = parentContract?.deliverableIssueKey ?? null;
-  const optionViews = ranked.map((option) => toOptionView(option, request, provider, variationRoundId, visible, existingDeliverable));
+  const optionViews = ranked.map((option) => toOptionView(option, request, provider, variationRoundId, visible, existingDeliverable, hide));
   const labelOf = (id: number) => optionViews.find((o) => o.id === id)?.label ?? byId.get(id)?.kind ?? null;
   const toSideStatus = (approval: Approval | null): SideStatus => ({
     decision: approval?.decision ?? null,
@@ -312,26 +362,31 @@ export async function buildDealSheet(input: DealSheetInput): Promise<DealSheetVi
       variation,
       decision: requesterRound?.status === 'done' ? storedDecision(requesterRound.output) : null,
       ranked,
-    }).map((line) => ({ ...line, text: [...round1, ...variation].reduce((text, o) => redact(text, o.trace, visible), line.text) })),
-    rounds: rounds.map((item) => ({ roundNo: item.roundNo, role: item.role, status: item.status, error: item.error })),
+    }).map((line) => ({
+      ...line,
+      text: hide([...round1, ...variation].reduce((text, o) => redact(text, o.trace, visible), line.text)),
+    })),
+    rounds: rounds.map((item) => ({ roundNo: item.roundNo, role: item.role, status: item.status, error: item.error === null ? null : hide(item.error) })),
     approvals: approvals.map((approval) => ({
       side: sideOf(approval.teamId),
       decision: approval.decision,
       optionId: approval.optionId,
-      reason: approval.reason,
+      reason: approval.reason === null ? null : hide(approval.reason),
     })),
     agreedOptionId: state.agreedOptionId,
     canDecideAs: request.status === 'awaiting-approval' ? openSides(input.viewerSides, sideStatus) : [],
     sameApproverAllowed: input.sameApproverAllowed,
     canRetry: input.canRetry,
-    contract,
+    contract: contract ? { ...contract, deliverableIssueKey: shownKey(contract.deliverableIssueKey) } : null,
     sideStatus,
     appliedChanges:
-      contract && agreedView && provenance ? appliedChanges(request, provider.jiraProjectKey, agreedView, contract, provenance) : [],
+      contract && agreedView && provenance
+        ? appliedChanges(request, provider.jiraProjectKey, agreedView, contract, provenance, visible).map((change) => ({ ...change, text: hide(change.text) }))
+        : [],
     renegotiationContext: parentContract
       ? {
-          text: renegotiationContext(parentContract, typeof criticalBugs === 'number' ? criticalBugs : null),
-          issueKeys: parentContract.deliverableIssueKey ? [parentContract.deliverableIssueKey] : [],
+          text: hide(renegotiationContext(parentContract, typeof criticalBugs === 'number' ? criticalBugs : null)),
+          issueKeys: [shownKey(parentContract.deliverableIssueKey)].filter((key): key is string => Boolean(key)),
         }
       : null,
   };
@@ -341,7 +396,8 @@ export interface RequestSummary {
   id: string;
   title: string;
   status: DependencyRequest['status'];
-  sourceIssueKey: string;
+  /** Null when the viewer cannot browse the source issue. */
+  sourceIssueKey: string | null;
   neededBy: string;
   requester: string;
   provider: string;
@@ -364,6 +420,8 @@ export function summarize(
   viewerSides: Side[],
   approvals: readonly Approval[],
   extras: SummaryExtras = {},
+  /** Whether the viewer may browse the source issue (approvers keep the title, not the key). */
+  sourceVisible = true,
 ): RequestSummary {
   const state = approvalState(approvals, request.requesterTeamId, request.providerTeamId);
   const pendingFor =
@@ -374,7 +432,7 @@ export function summarize(
     id: request.id,
     title: request.title,
     status: request.status,
-    sourceIssueKey: request.sourceIssueKey,
+    sourceIssueKey: sourceVisible ? request.sourceIssueKey : null,
     neededBy: request.neededBy,
     requester: teams.get(request.requesterTeamId)?.name ?? request.requesterTeamId,
     provider: teams.get(request.providerTeamId)?.name ?? request.providerTeamId,

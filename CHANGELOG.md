@@ -8,6 +8,10 @@ All notable changes are recorded here. The format follows Keep a Changelog; vers
 - App icon (two brackets for the two teams around a check for the agreement, transparent background, Atlassian blue, purple and green) in `assets/icon/` as SVG source with PNG exports. The manifest uses it for the issue panel, the global page, the Confluence byline item and both Rovo agents, and the app now has a short description.
 
 ### Fixed
+- Audit, Teams (list and capacity) and the Rovo Delegate actions failed ("Something went wrong (getAudit)") for a user without Browse on a team's project: Jira answers `mypermissions` with HTTP 404 there. A 404 now counts as no permission (never as granted); other errors (401, 5xx) still fail.
+- The deal sheet ("Changes applied", the active contract line, the renegotiation context, option texts) the Contracts list and the Audit summaries ("linked existing …", renegotiation notes) showed the deliverable key (e.g. ACPAY-33) to viewers who cannot browse the provider project. It now reads "a restricted issue" for them, in a form that fits the sentence ("the existing deliverable (restricted)", "contract for a restricted issue", "A restricted issue …" at the start of a sentence), and is no longer linked; viewers with Browse see it as before.
+- The source issue (requester project) follows the same rule in the deal sheet, the Rovo request action (its key and URL become null), the Inbox and the Audit: its key is shown only to viewers who can browse it. A viewer on neither side who cannot browse the source issue sees the request title as "Restricted" (in the deal sheet and Audit, like the Contracts list). Links to a hidden issue are dropped from texts instead of being left half-redacted.
+- `visibleIssueKeys` deduplicates the keys and checks them in batches of 100 per JQL query, so long lists never build an unbounded `key in (...)` query.
 - The deliverable created when a contract is applied was left in the provider's backlog: it is now placed in the sprint the agreed date falls in (the sprint the planner used for the option, e.g. "Deliverable planned in Payments Sprint 41"), including after a renegotiation. When that sprint does not exist in Jira yet, the deliverable stays in the backlog and the comment and audit say why. The monitor now sees the deliverable in that sprint, and a new contract stays On track.
 - "Clean demo data" did not undo the moves of an "on time with a shift" option, so demo takes needed manual sprint fixes. Accord now records where each shifted issue came from, and Clean puts it back in that sprint (the earliest origin if it was shifted more than once) when the sprint still exists and is not closed; the summary says "restored N moved issues". Only issues in Accord's demo projects are touched.
 - "Clean demo data" stopped (and failed again on every retry) when one shifted issue had been deleted or Jira refused to move it: the other issues are still moved back, a refused issue is named in the summary and retried by the next clean, and a deleted one is dropped. Done issues and issues someone moved after the shift are left where they are and reported as skipped.
@@ -25,6 +29,9 @@ All notable changes are recorded here. The format follows Keep a Changelog; vers
 - Demo tab: "Make me the demo lead", "Clean demo data" and the demo mode switch appear as soon as the seed finishes, without a reload.
 - Audit tab refreshes when it is opened and after decisions or demo actions, not only on Refresh.
 - README: judge install steps name the "Get app" button, the Confluence tick box, the required "What do you need?" field and the exact button names, and note that Rovo agents and MCP need a site with Rovo.
+
+### Changed
+- Approvers and project leads no longer see every issue key of their contracts: without Browse on the other team's project they now see "a restricted issue" (and "Restricted" in key columns) instead of the deliverable or source issue key, in the deal sheet, Inbox, Contracts list, dependency map and Audit. They keep the request title, which they decide on.
 
 ## [1.0.0] - 2026-11-05
 

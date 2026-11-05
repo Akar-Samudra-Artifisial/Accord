@@ -1,5 +1,5 @@
 import { route } from '@forge/api';
-import { jira, type Principal } from '../atlassian/http';
+import { isNotFound, jira, type Principal } from '../atlassian/http';
 
 export type JiraPermission =
   | 'ADMINISTER'
@@ -30,7 +30,15 @@ export async function myPermissions(
       : 'issueKey' in scope
         ? route`/rest/api/3/mypermissions?issueKey=${scope.issueKey}&permissions=${list}`
         : route`/rest/api/3/mypermissions?permissions=${list}`;
-  const response = await jira<MyPermissionsResponse>(path, { as });
+  let response: MyPermissionsResponse;
+  try {
+    response = await jira<MyPermissionsResponse>(path, { as });
+  } catch (error) {
+    // Jira answers 404 for a project or issue the principal cannot browse: that means no permission at all
+    // (fail closed, never granted). Every other error (401, 5xx, timeout) still fails the caller.
+    if (isNotFound(error)) return new Set();
+    throw error;
+  }
   return new Set(permissions.filter((permission) => response.permissions[permission]?.havePermission === true));
 }
 

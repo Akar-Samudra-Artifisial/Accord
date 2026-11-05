@@ -36,8 +36,10 @@ export function contractLinks(
   return { url: deliverableIssueUrl ?? sourceIssueUrl, sourceIssueUrl, deliverableIssueUrl };
 }
 
-/** A request lives in the deal sheet on its source issue. */
-export function requestLinks(links: SiteLinks, sourceIssueKey: string): { url: string; sourceIssueUrl: string } {
-  const url = links.issue(sourceIssueKey);
+/** A request lives in the deal sheet on its source issue; a source key the viewer may not see has no link. */
+export function requestLinks(links: SiteLinks, sourceIssueKey: string): { url: string; sourceIssueUrl: string };
+export function requestLinks(links: SiteLinks, sourceIssueKey: string | null): { url: string | null; sourceIssueUrl: string | null };
+export function requestLinks(links: SiteLinks, sourceIssueKey: string | null): { url: string | null; sourceIssueUrl: string | null } {
+  const url = sourceIssueKey ? links.issue(sourceIssueKey) : null;
   return { url, sourceIssueUrl: url };
 }

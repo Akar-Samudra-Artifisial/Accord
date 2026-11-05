@@ -13,6 +13,7 @@ import {
 } from '../../src/negotiation/orchestrator';
 import { handleNegotiationEvent } from '../../src/negotiation/consumer';
 import { APP_CREATOR } from '../../src/negotiation/types';
+import type { Side } from '../../src/negotiation/delegates';
 import { buildDealSheet, renegotiationContext } from '../../src/negotiation/views';
 import { formatDate } from '../../src/format/dates';
 import { MOB, PAY, REQUEST_ID, harness, request, type Harness } from './fakes';
@@ -159,6 +160,60 @@ describe('openRenegotiation (FR-14)', () => {
     expect(changes[0]).toMatch(/^Linked existing PAY-100 "Refund API" in PAY and moved its due date to /);
     expect(changes[1]).toBe('PAY-100 already blocked MOB-7; no new link.');
     expect(changes.join(' ')).not.toContain('Created');
+  });
+
+  it('hides the deliverable key from a viewer who cannot browse the provider project, and shows it to one who can', async () => {
+    const h = harness({ commitments: shiftScenario() });
+    const input = await trigger(h);
+    const sheetFor = async (requestId: string, browsable: (key: string) => boolean, viewerSides: Side[] = ['requester']) =>
+      buildDealSheet({
+        store: h.store,
+        request: (await h.store.getRequest(requestId))!,
+        requester: MOB,
+        provider: PAY,
+        viewerSides,
+        visibleKeys: async (keys) => new Set(keys.filter(browsable)),
+        sameApproverAllowed: false,
+        canRetry: false,
+      });
+    const noPay = (key: string) => !key.startsWith('PAY-');
+
+    const restricted = await sheetFor(REQUEST_ID, noPay);
+    const text = JSON.stringify(restricted);
+    expect(text).not.toMatch(/PAY-\d/);
+    expect(restricted.appliedChanges.slice(0, 2).map((c) => c.text)).toEqual([
+      expect.stringMatching(/^Created a restricted issue "Refund API" in PAY, due /),
+      'Linked a restricted issue as blocking MOB-7.',
+    ]);
+    expect(restricted.appliedChanges.flatMap((c) => c.issueKeys).every(noPay)).toBe(true);
+    expect(restricted.contract?.deliverableIssueKey).toBeNull();
+
+    const allowed = await sheetFor(REQUEST_ID, () => true);
+    expect(allowed.appliedChanges[0].text).toMatch(/^Created PAY-100 /);
+    expect(allowed.appliedChanges[0].issueKeys).toEqual(['PAY-100']);
+    expect(allowed.contract?.deliverableIssueKey).toBe('PAY-100');
+    expect(allowed.request).toMatchObject({ sourceIssueKey: 'MOB-7', title: 'Refund API' });
+
+    // The source issue follows the same rule: a provider approver who cannot browse MOB keeps the title
+    // (they decide on it) but not the key; a viewer on neither side loses the title as well.
+    const noMob = (key: string) => !key.startsWith('MOB-');
+    const provider = await sheetFor(REQUEST_ID, noMob, ['provider']);
+    expect(JSON.stringify(provider)).not.toMatch(/MOB-\d/);
+    expect(provider.request).toMatchObject({ sourceIssueKey: null, title: 'Refund API' });
+    expect(provider.appliedChanges[1]).toEqual({ kind: 'link', text: 'Linked PAY-100 as blocking a restricted issue.', issueKeys: ['PAY-100'] });
+    const outsider = await sheetFor(REQUEST_ID, noMob, []);
+    expect(outsider.request.title).toBe('Restricted');
+    expect(JSON.stringify(outsider)).not.toMatch(/Refund API|MOB-\d/);
+
+    // A renegotiation names the kept deliverable in its context and preview: hidden the same way.
+    await openRenegotiation(h.deps, input, RENEGOTIATION_ID);
+    await runRound1(h.deps, RENEGOTIATION_ID);
+    await runRound2(h.deps, RENEGOTIATION_ID);
+    const renegotiation = await sheetFor(RENEGOTIATION_ID, noPay);
+    expect(JSON.stringify(renegotiation)).not.toMatch(/PAY-\d/);
+    expect(renegotiation.renegotiationContext).toMatchObject({ text: expect.stringContaining('the contract for a restricted issue'), issueKeys: [] });
+    expect(renegotiation.options[0].jiraChanges[0].text).toMatch(/^Keep the existing deliverable \(restricted\) and move its due date /);
+    expect(JSON.stringify(renegotiation)).not.toMatch(/existing a restricted|the a restricted|\. a restricted/);
   });
 
   it('the deal sheet explains the contract it renegotiates, with numbers from the data (FR-14)', async () => {
