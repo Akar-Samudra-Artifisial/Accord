@@ -85,13 +85,23 @@ modules:
         request (for example, the minimum part a few days earlier) via
         evaluate-options. 6. If data is limited, an input is missing, or an
         action returns an error, say so plainly and ask instead of guessing.
-        7. "What do we owe other teams" means contracts where your team is the
-        provider: call list-contracts with your teamKey and report only the
-        contracts whose role is "provider" (providerTeamKey equals your team
-        key), with each contract's agreedDisplay, projectedDisplay and
-        statusDisplay. Contracts with role "requester" are what other teams owe
-        you. Status "Not enough data" means there is not enough capacity data;
-        say so instead of calling the contract at risk. 8. Only create a dependency request when
+        7. The direction of a contract is given by list-contracts in the
+        direction field; never infer it from role, team order or wording.
+        "What do we owe other teams" means only contracts whose direction is
+        "you-owe" or "both"; "what are others delivering to us" means only
+        contracts whose direction is "owed-to-you" or "both". Contracts with
+        direction "none" are between other teams. Describe each contract by
+        copying its directionDisplay verbatim (for example "Payments delivers
+        to Mobile"), plus agreedDisplay, projectedDisplay and statusDisplay.
+        Never mention raw field values or names such as direction, role,
+        viewerRole, you-owe, owed-to-you, both or none. Status "Not enough
+        data" means there is not enough capacity data; say so instead of
+        calling the contract at risk. If list-teams marks a team with access
+        "restricted", the team exists but the user cannot browse its Jira
+        project: never say it does not exist; say for example "Payments
+        exists, but you don't have access to its Jira project, so I can only
+        share its aggregate capacity", and share only what get-team-capacity
+        or get-team-charter return for it. 8. Only create a dependency request when
         the user gives the source issue, provider team, size (S, M or L) and
         needed-by date; costClass must be fixed-date, standard or intangible.
         The title is optional; do not ask for it. When the user gave none,
@@ -159,11 +169,19 @@ modules:
         or guess URLs; project keys are not issues. Write every issue key as a
         markdown link to the url field returned with it (for example
         [ACPAY-28](url)): url, sourceIssueUrl or deliverableIssueUrl; write a
-        key whose url is null as plain text. 10. "What do we owe other teams"
-        means contracts where the team is the provider: call list-contracts
-        with that teamKey and report only the contracts whose role is
-        "provider" (providerTeamKey equals the team key). Contracts with role
-        "requester" are what other teams owe that team. 11. Show dates and
+        key whose url is null as plain text. 10. The direction of a contract is
+        given by list-contracts in the direction field, from the user's point
+        of view; never infer it from role, team order or wording. "What do we
+        owe other teams" means only contracts whose direction is "you-owe" or
+        "both"; "what are others delivering to us" means only contracts whose
+        direction is "owed-to-you" or "both". Contracts with direction "none"
+        are between other teams. Describe each contract by copying its
+        directionDisplay verbatim (for example "Payments delivers to Mobile").
+        Never mention raw field values or names such as direction, role,
+        viewerRole, you-owe, owed-to-you, both or none. If list-teams marks
+        a team with access "restricted", the team exists but the user cannot
+        browse its Jira project: say so plainly and share only what
+        get-team-capacity or get-team-charter return for it. 11. Show dates and
         statuses as given in the *Display fields (dateRangeDisplay,
         neededByDisplay, agreedDisplay, projectedDisplay, statusDisplay);
         never show *Iso values or status codes such as on-track. Keep answers
@@ -194,8 +212,10 @@ modules:
       name: List teams
       function: act-list-teams
       actionVerb: GET
-      description: Lists the teams registered in Accord with team key, team name and
-        Jira project key. Use it to resolve a team name to its Accord team key.
+      description: Lists all Accord teams with team key, name, Jira project key and
+        access. "restricted" means the team exists but the user cannot browse
+        its project; only name and aggregate capacity are shared. Use it to
+        resolve a team name to its key.
     - key: get-team-charter
       name: Get team charter
       function: act-team-charter
@@ -213,7 +233,8 @@ modules:
       function: act-team-capacity
       actionVerb: GET
       description: Returns realistic and pessimistic capacity per sprint from recent
-        throughput, plus existing commitments, as aggregate numbers.
+        throughput, plus existing commitments, as aggregate numbers. For a team
+        with access "restricted" only the aggregate capacity is returned.
       inputs:
         teamKey:
           title: Team key
@@ -255,10 +276,10 @@ modules:
       name: List contracts
       function: act-list-contracts
       actionVerb: GET
-      description: Lists a team's dependency contracts with agreedDisplay,
-        projectedDisplay, statusDisplay (On track, At risk, Not enough data)
-        and role, either "provider" (team delivers) or "requester" (team
-        receives).
+      description: Lists dependency contracts with agreedDisplay, projectedDisplay,
+        statusDisplay and direction from the user's view, "you-owe" (user's
+        team delivers), "owed-to-you" (receives), "both" or "none", plus a
+        ready directionDisplay sentence to copy verbatim.
       inputs:
         teamKey:
           title: Team key

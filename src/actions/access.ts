@@ -18,12 +18,17 @@ export interface TeamAccessChecks {
  */
 export async function requireTeamAccess(team: Team, viewer: Viewer, checks: TeamAccessChecks): Promise<void> {
   if (!viewer.accountId) throw new UserFacingError('A signed-in Jira user is required.');
-  if ((await checks.approvers(team)).includes(viewer.accountId)) return;
-  let browse = false;
+  if (!(await hasTeamAccess(team, viewer, checks))) throw new UserFacingError(TEAM_ACCESS_DENIED);
+}
+
+/** Same rule as `requireTeamAccess`, as a boolean: approver/lead or Browse; a failed check counts as no access. */
+export async function hasTeamAccess(team: Team, viewer: Viewer, checks: TeamAccessChecks): Promise<boolean> {
+  if (!viewer.accountId) return false;
+  if ((await checks.approvers(team)).includes(viewer.accountId)) return true;
   try {
-    browse = await checks.canBrowseProject(team.jiraProjectKey, viewer);
+    return await checks.canBrowseProject(team.jiraProjectKey, viewer);
   } catch (error) {
     console.error(`Accord team access check for ${team.teamKey} failed`, error instanceof Error ? error.message : String(error));
+    return false;
   }
-  if (!browse) throw new UserFacingError(TEAM_ACCESS_DENIED);
 }

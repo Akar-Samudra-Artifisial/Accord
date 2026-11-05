@@ -1,5 +1,48 @@
 import { describe, expect, it } from 'vitest';
-import { contractDisplay, neededByDates, optionDates, sprintDates } from '../../src/actions/display';
+import { contractDirection, contractDisplay, neededByDates, optionDates, sprintDates } from '../../src/actions/display';
+
+describe('contractDirection (viewer point of view)', () => {
+  // Mobile asks, Payments delivers.
+  const row = { requester: 'Mobile', requesterTeamKey: 'ACMOB', provider: 'Payments', providerTeamKey: 'ACPAY' };
+
+  it('a Mobile viewer is owed the work, a Payments viewer owes it', () => {
+    expect(contractDirection(row, new Set(['ACMOB']))).toEqual({
+      viewerRole: 'requester',
+      direction: 'owed-to-you',
+      counterpartTeam: 'Payments',
+      directionDisplay: 'Payments owes this to your team Mobile',
+    });
+    expect(contractDirection(row, new Set(['ACPAY']))).toEqual({
+      viewerRole: 'provider',
+      direction: 'you-owe',
+      counterpartTeam: 'Mobile',
+      directionDisplay: 'Your team Payments owes this to Mobile',
+    });
+  });
+
+  it('a lead of both teams gets "both" and a ready sentence, every time', () => {
+    const both = new Set(['ACMOB', 'ACPAY']);
+    const expected = { viewerRole: 'both', direction: 'both', counterpartTeam: 'Mobile', directionDisplay: 'Payments delivers to Mobile' };
+    expect(contractDirection(row, both)).toEqual(expected);
+    expect(contractDirection(row, new Set(['ACPAY', 'ACMOB', 'ACWEB']))).toEqual(expected);
+  });
+
+  it('a viewer on neither team gets "none" and the same neutral sentence, never "you owe"', () => {
+    expect(contractDirection(row, new Set(['ACWEB']))).toEqual({
+      viewerRole: null,
+      direction: 'none',
+      counterpartTeam: null,
+      directionDisplay: 'Payments delivers to Mobile',
+    });
+    expect(contractDirection(row, new Set())).toMatchObject({ direction: 'none' });
+  });
+
+  it('never returns "unknown"', () => {
+    const sets = [new Set<string>(), new Set(['ACMOB']), new Set(['ACPAY']), new Set(['ACMOB', 'ACPAY']), new Set(['ACWEB'])];
+    const rows = [row, { ...row, requesterTeamKey: null }, { ...row, providerTeamKey: null }];
+    for (const r of rows) for (const own of sets) expect(JSON.stringify(contractDirection(r, own))).not.toMatch(/unknown/);
+  });
+});
 
 describe('Rovo action display fields', () => {
   it('replaces raw contract dates and status codes with *Iso, statusCode and readable *Display fields', () => {

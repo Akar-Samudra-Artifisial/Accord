@@ -1,6 +1,6 @@
 import { UserFacingError } from '../errors';
 import { describeRule } from '../planner';
-import { getCharter, getTeamByKey, listTeams, type Team } from '../teams/repository';
+import { getCharter, getTeamByKey, listTeams } from '../teams/repository';
 import { loadCommitments, teamCapacity } from '../teams/service';
 import { teamDirectory } from '../negotiation/deps';
 import { contracts, createRequestFromIssue, dealSheet, evaluateRequestOptions, previewRequestFromIssue } from '../resolvers/negotiation';
@@ -8,10 +8,10 @@ import { myPermissions } from '../jira/permissions';
 import { route } from '@forge/api';
 import { jira } from '../atlassian/http';
 import { ISSUE_KEY } from '../jira/issues';
-import { requireTeamAccess, type TeamAccessChecks } from './access';
+import { hasTeamAccess, type TeamAccessChecks } from './access';
 import { contractLinks, parseBaseUrl, requestLinks, siteLinks, type SiteLinks } from './links';
 import type { ActionServices, Viewer } from './handlers';
-import { contractDisplay, neededByDates, optionDates, rangeDisplay, sprintDates } from './display';
+import { contractDirection, contractDisplay, neededByDates, optionDates, rangeDisplay, sprintDates } from './display';
 
 /** Production services for the Rovo actions: Forge SQL, Jira and Confluence data only (no demo data). */
 
@@ -26,13 +26,17 @@ const accessChecks: TeamAccessChecks = {
   },
 };
 
-/** Registered team the viewer may see (approver/lead or BROWSE_PROJECTS on the team project). */
-async function requireTeam(teamKey: string, viewer: Viewer): Promise<Team> {
-  requireSignedIn(viewer);
-  const team = await getTeamByKey(teamKey);
-  if (!team) throw new UserFacingError(`Team ${teamKey} is not registered in Accord.`);
-  await requireTeamAccess(team, viewer, accessChecks);
-  return team;
+/**
+ * The viewer's own teams, for the direction of a contract: teams they approve for (or lead); a viewer who
+ * approves for none counts the teams whose project they can browse (fail closed per team).
+ */
+async function viewerTeamKeys(viewer: Viewer): Promise<Set<string>> {
+  const all = await listTeams();
+  const approves = await Promise.all(all.map(async (team) => (await teamDirectory.approvers(team)).includes(viewer.accountId ?? '')));
+  const approved = all.filter((_, index) => approves[index]);
+  if (approved.length) return new Set(approved.map((team) => team.teamKey));
+  const browse = await Promise.all(all.map((team) => accessChecks.canBrowseProject(team.jiraProjectKey, viewer).catch(() => false)));
+  return new Set(all.filter((_, index) => browse[index]).map((team) => team.teamKey));
 }
 
 let baseUrl: Promise<string> | null = null;
@@ -50,22 +54,42 @@ export async function links(): Promise<SiteLinks> {
 
 export const actionServices: ActionServices = {
   // Keys and names only (no leads, approvers or charter content), so agents can map names to keys.
-  // Only teams whose Jira project the viewer can browse (checked as the user, one call per project).
+  // Every registered team, like the Teams tab; `access` says whether the viewer may see more than the
+  // aggregate capacity (approver/lead or Browse on the team project, checked as the user).
   async teams(viewer) {
     requireSignedIn(viewer);
     const all = await listTeams();
-    const browsable = await Promise.all(all.map((team) => accessChecks.canBrowseProject(team.jiraProjectKey, viewer)));
-    return all.filter((_, index) => browsable[index]).map(({ teamKey, name, jiraProjectKey }) => ({ teamKey, name, jiraProjectKey }));
+    const access = await Promise.all(all.map((team) => hasTeamAccess(team, viewer, accessChecks)));
+    return all.map(({ teamKey, name, jiraProjectKey }, index) => ({
+      teamKey,
+      name,
+      jiraProjectKey,
+      access: access[index] ? ('full' as const) : ('restricted' as const),
+    }));
   },
 
   async teamCharter(teamKey, viewer) {
-    const team = await requireTeam(teamKey, viewer);
+    requireSignedIn(viewer);
+    const team = await getTeamByKey(teamKey);
+    if (!team) throw new UserFacingError(`Team ${teamKey} is not registered in Accord.`);
     const stored = await getCharter(team.id);
+    const charterStatus = !team.charterPageId ? 'none' : stored?.valid ? 'valid' : 'invalid';
+    if (!(await hasTeamAccess(team, viewer, accessChecks))) {
+      // Like the Teams tab: whether a charter exists, never its content.
+      return {
+        teamKey: team.teamKey,
+        team: team.name,
+        access: 'restricted' as const,
+        charterStatus,
+        note: `${team.name} exists, but you do not have access to its Jira project, so its charter is not shared.`,
+      };
+    }
     const charter = stored?.charter ?? null;
     return {
       teamKey: team.teamKey,
       team: team.name,
-      charterStatus: !team.charterPageId ? 'none' : stored?.valid ? 'valid' : 'invalid',
+      access: 'full' as const,
+      charterStatus,
       missingFields: stored?.missingFields ?? [],
       priorities: charter?.priorities ?? [],
       redLines: (charter?.redLines ?? []).map(describeRule),
@@ -80,7 +104,25 @@ export const actionServices: ActionServices = {
   },
 
   async teamCapacity(teamKey, viewer) {
-    const team = await requireTeam(teamKey, viewer);
+    requireSignedIn(viewer);
+    const found = await getTeamByKey(teamKey);
+    if (!found) throw new UserFacingError(`Team ${teamKey} is not registered in Accord.`);
+    if (!(await hasTeamAccess(found, viewer, accessChecks))) {
+      // Exactly what the Teams tab shows every signed-in user: name and aggregate capacity, no sprints or issues.
+      const capacity = await teamCapacity(found);
+      return {
+        teamKey: found.teamKey,
+        team: found.name,
+        access: 'restricted' as const,
+        note: `${found.name} exists, but you do not have access to its Jira project, so only its aggregate capacity is shared.`,
+        source: capacity.sourceLabel,
+        limitedData: capacity.limitedData,
+        pessimisticPerSprint: capacity.pessimistic,
+        realisticPerSprint: capacity.realistic,
+        samples: capacity.samples,
+      };
+    }
+    const team = found;
     const [capacity, planning, stored] = [await teamCapacity(team), await loadCommitments(team), await getCharter(team.id)];
     const share = stored?.charter?.maxExternalShare ?? null;
     const committed = new Map<string, number>();
@@ -91,6 +133,7 @@ export const actionServices: ActionServices = {
     return {
       teamKey: team.teamKey,
       team: team.name,
+      access: 'full' as const,
       source: capacity.sourceLabel,
       limitedData: capacity.limitedData,
       pessimisticPerSprint: capacity.pessimistic,
@@ -166,11 +209,14 @@ export const actionServices: ActionServices = {
   async contracts(teamKey, viewer) {
     const site = await links();
     const rows = await contracts(viewer.accountId, teamKey, viewer.as);
+    const own = rows.length ? await viewerTeamKeys(viewer) : new Set<string>();
     return {
       teamKey: teamKey ?? null,
       contracts: rows.map(({ supersededBy, ...row }) => ({
         ...contractDisplay(row),
         ...contractLinks(site, row),
+        // Viewer-perspective direction (additive): agents use it for "what do we owe" / "what do others deliver to us".
+        ...contractDirection(row, own),
         // FR-14: the renegotiated contract that replaced this one, with display dates only.
         supersededBy: supersededBy
           ? {

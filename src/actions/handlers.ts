@@ -37,10 +37,15 @@ export interface TeamRef {
   teamKey: string;
   name: string;
   jiraProjectKey: string;
+  /**
+   * "full": the viewer is an approver/lead or can browse the team project. "restricted": the team exists
+   * (as on the Teams tab) but only its name and aggregate capacity are shared.
+   */
+  access?: 'full' | 'restricted';
 }
 
 export interface ActionServices {
-  /** Teams registered in Accord whose Jira project the viewer can browse (keys and names only). */
+  /** Every team registered in Accord (keys and names only), marked with the viewer's access. */
   teams(viewer: Viewer): Promise<TeamRef[]>;
   teamCharter(teamKey: string, viewer: Viewer): Promise<unknown>;
   teamCapacity(teamKey: string, viewer: Viewer): Promise<unknown>;
@@ -190,7 +195,7 @@ export function createActionHandlers(services: ActionServices) {
   /** Resolves a team reference against the registered teams, then runs `work` with the Accord key. */
   const withTeam = (operation: string, viewer: Viewer, ref: string, inputName: string, work: (teamKey: string) => Promise<unknown>) =>
     guarded(operation, async () => {
-      // Teams the viewer cannot browse are unknown to them, also in the "valid teams" hint.
+      // Every registered team resolves, as on the Teams tab; services decide what a restricted viewer gets.
       const resolved = resolveTeamRef(ref, await services.teams(viewer), inputName);
       return resolved.ok ? work(resolved.value) : ({ error: resolved.error } satisfies ActionError);
     });

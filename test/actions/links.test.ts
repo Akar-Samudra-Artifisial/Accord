@@ -100,9 +100,13 @@ describe('action outputs carry real URLs', () => {
     expect(result.contracts[2]).toMatchObject({ title: 'Restricted', url: null, sourceIssueUrl: null, deliverableIssueUrl: null });
   });
 
-  it('list-teams returns only teams whose project the user can browse, checked as the user', async () => {
+  it('list-teams returns every team, restricted where the user cannot browse the project (checked as the user)', async () => {
     fake.permissionChecks.length = 0;
-    expect((await actionServices.teams(USER)).map((team) => team.teamKey)).toEqual(['ACMOB', 'ACPAY']);
+    expect((await actionServices.teams(USER)).map((team) => [team.teamKey, team.access])).toEqual([
+      ['ACMOB', 'full'],
+      ['ACPAY', 'full'],
+      ['ACSEC', 'restricted'],
+    ]);
     expect(fake.permissionChecks.sort()).toEqual(['ACMOB as user', 'ACPAY as user', 'ACSEC as user']);
     await expect(actionServices.teams({ accountId: undefined, as: 'user' })).rejects.toThrow(/signed-in/);
   });
