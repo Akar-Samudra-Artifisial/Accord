@@ -263,8 +263,9 @@ export interface NegotiationDeps {
    */
   userPermissions(scope: { projectKey: string } | { issueKey: string }, permissions: readonly JiraPermission[]): Promise<Set<JiraPermission>>;
   /**
-   * Dual control: one account may not approve for both teams unless this demo
-   * switch is on (env `ACCORD_DEMO_ALLOW_SAME_APPROVER=true`, development only).
+   * Dual control: one account may not approve for both teams unless demo mode is on (per-installation
+   * switch in the Demo tab, admin only, off by default, audited) AND both teams are Accord demo projects.
+   * Returns false when the check fails.
    */
-  allowSameApprover: boolean;
+  allowSameApprover(teams: { requester: Team; provider: Team }): Promise<boolean>;
 }

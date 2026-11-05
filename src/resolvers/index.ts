@@ -1,7 +1,5 @@
 import Resolver from '@forge/resolver';
 import { clientError, UserFacingError } from '../errors';
-import { planOptions } from '../planner';
-import { demoPlannerInput } from '../demo/scenario';
 import { executeSeedStep, existingDemoProjectKey, getSeedStatus, requireSeedAccess } from '../demo/seed';
 import { SEED_STEPS, type SeedStep } from '../demo/seed-data';
 import { charterBylineState } from '../confluence/charter';
@@ -38,6 +36,7 @@ import { demoBugPort, requireDemoBugPermissions } from '../demo/critical-bugs-po
 import { assignDemoLead, demoLeadPort, userCanManageDemoProjects, userSeedAccess } from '../demo/demo-lead';
 import { cleanDemoData } from '../demo/clean';
 import { demoCleanPort } from '../demo/clean-port';
+import { changeDemoMode, demoModePort } from '../demo/demo-mode';
 
 type Result<T> = ({ ok: true } & T) | { ok: false; error: string };
 
@@ -255,7 +254,36 @@ resolver.define('cleanDemoData', async ({ context }: { context: RequestContext }
   }
 });
 
-resolver.define('getDemoOptions', () => planOptions(demoPlannerInput()));
+/** Demo mode state for the Demo tab; `canManage` mirrors the server-side check of `setDemoMode`. */
+resolver.define('getDemoMode', async ({ context }: { context: RequestContext }) => {
+  try {
+    const enabled = await demoModePort.enabled();
+    if (!context.accountId) return { ok: true, enabled, canManage: false };
+    const projects = await demoLeadPort.accordProjects();
+    const canManage = await userCanManageDemoProjects();
+    let allowed = projects.length > 0;
+    for (const project of projects) allowed = allowed && (await canManage(project.projectKey));
+    return { ok: true, enabled, canManage: allowed };
+  } catch (error) {
+    return failure('getDemoMode', error);
+  }
+});
+
+/** Admin only (site admin or project admin of every Accord demo project), checked here as the signed-in user. */
+resolver.define('setDemoMode', async ({ payload, context }: { payload: { enabled?: unknown }; context: RequestContext }) => {
+  try {
+    if (!context.accountId) throw new UserFacingError('A signed-in Jira user is required.');
+    const result = await changeDemoMode(demoModePort, {
+      accountId: context.accountId,
+      enabled: payload?.enabled,
+      projects: await demoLeadPort.accordProjects(),
+      canManage: await userCanManageDemoProjects(),
+    });
+    return { ok: true, ...result };
+  } catch (error) {
+    return failure('setDemoMode', error);
+  }
+});
 
 /**
  * Open to every signed-in user of the Accord page on purpose: it lists team names, project keys,

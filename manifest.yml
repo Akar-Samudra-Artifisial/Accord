@@ -27,18 +27,9 @@ modules:
       queue: accord-negotiation
       # @forge/events v2+: consumers reference a function directly (the v1 `resolver` form makes push return 400).
       function: negotiation-consumer
-    - key: accord-demo-seed-consumer
-      queue: accord-demo-seed
-      function: demo-seed-consumer
     - key: accord-monitor-consumer
       queue: accord-monitor
       function: monitor-consumer
-  # TODO(before production): remove accord-dev-diag and the dev-diag function (development diagnostics only).
-  webtrigger:
-    - key: accord-dev-diag
-      function: dev-diag
-      response:
-        type: dynamic
   trigger:
     - key: accord-lifecycle
       function: lifecycle
@@ -324,10 +315,6 @@ modules:
       handler: index.dailyMonitorHandler
     - key: monitor-consumer
       handler: index.monitorConsumerHandler
-    - key: demo-seed-consumer
-      handler: index.demoSeedConsumerHandler
-    - key: dev-diag
-      handler: index.devDiagHandler
     - key: lifecycle
       handler: index.lifecycleHandler
     - key: issuelink-created

@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../src/sql/db', () => ({ run: vi.fn(), select: vi.fn(async () => []) }));
+
 import { shiftScenario } from '../planner/fixtures';
+import { sameApproverAllowed } from '../../src/demo/demo-mode';
 import {
   applyContract,
   contractLabel,
@@ -259,9 +263,89 @@ describe('approvals', () => {
     expect(h.store.auditLog.some((e) => e.action === 'decision-denied' && (e.payload as { rule?: string }).rule === 'dual-control')).toBe(true);
   });
 
+  it('dual control: demo mode off (default) refuses the second approval by the same account without reading other state', async () => {
+    const h = harness({ commitments: shiftScenario() });
+    let modeReads = 0;
+    h.deps.allowSameApprover = async () => {
+      modeReads += 1;
+      return false;
+    };
+    h.deps.teams.approvers = async () => ['lead-both'];
+    const [best] = await negotiated(h);
+    await decide(h.deps, { requestId: REQUEST_ID, optionId: best, side: 'requester', decision: 'approve', accountId: 'lead-both' });
+    expect(modeReads).toBe(0);
+    await expect(
+      decide(h.deps, { requestId: REQUEST_ID, optionId: best, side: 'provider', decision: 'approve', accountId: 'lead-both' }),
+    ).rejects.toThrow(/Dual control/);
+    expect(modeReads).toBe(1);
+    expect((await h.store.getRequest(REQUEST_ID))?.status).toBe('awaiting-approval');
+    expect(h.store.auditLog.filter((e) => e.action === 'approved')).toHaveLength(1);
+  });
+
+  it('demo mode on: the same account may approve for both teams and the second approval is audited with demoMode', async () => {
+    const h = harness({ commitments: shiftScenario() });
+    h.deps.allowSameApprover = async () => true;
+    h.deps.teams.approvers = async () => ['lead-both'];
+    const [best] = await negotiated(h);
+    await decide(h.deps, { requestId: REQUEST_ID, optionId: best, side: 'requester', decision: 'approve', accountId: 'lead-both' });
+    const two = await decide(h.deps, { requestId: REQUEST_ID, optionId: best, side: 'provider', decision: 'approve', accountId: 'lead-both' });
+    expect(two.status).toBe('agreed');
+    const approved = h.store.auditLog.filter((e) => e.action === 'approved').map((e) => (e.payload as { demoMode?: boolean }).demoMode);
+    expect(approved).toEqual([undefined, true]);
+  });
+
+  it('demo mode on keeps dual control when a team is not an Accord demo project', async () => {
+    const h = harness({ commitments: shiftScenario() });
+    h.deps.allowSameApprover = ({ requester, provider }) =>
+      sameApproverAllowed(
+        { enabled: async () => true, demoProjectKeys: async () => ['MOB'] },
+        { requester: requester.jiraProjectKey, provider: provider.jiraProjectKey },
+      );
+    h.deps.teams.approvers = async () => ['lead-both'];
+    const [best] = await negotiated(h);
+    await decide(h.deps, { requestId: REQUEST_ID, optionId: best, side: 'requester', decision: 'approve', accountId: 'lead-both' });
+    await expect(
+      decide(h.deps, { requestId: REQUEST_ID, optionId: best, side: 'provider', decision: 'approve', accountId: 'lead-both' }),
+    ).rejects.toThrow(/Dual control/);
+    expect(h.store.auditLog.some((e) => e.action === 'decision-denied' && (e.payload as { rule?: string }).rule === 'dual-control')).toBe(true);
+  });
+
+  it('demo mode check failure fails closed: dual control refusal with decision-denied audit', async () => {
+    const h = harness({ commitments: shiftScenario() });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.deps.allowSameApprover = ({ requester, provider }) =>
+      sameApproverAllowed(
+        {
+          enabled: async () => {
+            throw new Error('SQL unavailable');
+          },
+          demoProjectKeys: async () => ['MOB', 'PAY'],
+        },
+        { requester: requester.jiraProjectKey, provider: provider.jiraProjectKey },
+      );
+    h.deps.teams.approvers = async () => ['lead-both'];
+    const [best] = await negotiated(h);
+    await decide(h.deps, { requestId: REQUEST_ID, optionId: best, side: 'requester', decision: 'approve', accountId: 'lead-both' });
+    await expect(
+      decide(h.deps, { requestId: REQUEST_ID, optionId: best, side: 'provider', decision: 'approve', accountId: 'lead-both' }),
+    ).rejects.toThrow(/Dual control/);
+    expect(h.store.auditLog.some((e) => e.action === 'decision-denied' && (e.payload as { rule?: string }).rule === 'dual-control')).toBe(true);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('demo mode on does not mark approvals by two different leads', async () => {
+    const h = harness({ commitments: shiftScenario() });
+    h.deps.allowSameApprover = async () => true;
+    const [best] = await negotiated(h);
+    await decide(h.deps, { requestId: REQUEST_ID, optionId: best, side: 'requester', decision: 'approve', accountId: 'lead-mobile' });
+    await decide(h.deps, { requestId: REQUEST_ID, optionId: best, side: 'provider', decision: 'approve', accountId: 'lead-payments' });
+    expect(h.store.auditLog.filter((e) => e.action === 'approved').every((e) => !('demoMode' in (e.payload as object)))).toBe(true);
+  });
+
   it('enqueues apply-contract once when both sides approve the same option, also when one person leads both teams (demo switch)', async () => {
     const h = harness({ commitments: shiftScenario() });
-    h.deps.allowSameApprover = true;
+    h.deps.allowSameApprover = async () => true;
     h.deps.teams.approvers = async () => ['lead-both'];
     const [best] = await negotiated(h);
     const one = await decide(h.deps, { requestId: REQUEST_ID, optionId: best, side: 'requester', decision: 'approve', accountId: 'lead-both' });

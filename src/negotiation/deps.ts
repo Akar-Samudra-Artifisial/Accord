@@ -18,6 +18,8 @@ import { sqlStore } from './store';
 import type { JiraPort, NegotiationDeps, QueuePort, TeamDirectory } from './types';
 import { MONITOR_QUEUE_KEY, providerWorkAhead, type MonitorEvent } from '../monitor/monitor';
 import { monitorDeps } from '../monitor/deps';
+import { demoModePort, sameApproverAllowed } from '../demo/demo-mode';
+import { demoLeadPort } from '../demo/demo-lead';
 
 export const NEGOTIATION_QUEUE_KEY = 'accord-negotiation';
 
@@ -120,5 +122,12 @@ export const productionDeps: NegotiationDeps = {
   today: () => new Date().toISOString().slice(0, 10),
   // Only `decide` uses this, and it is only called from resolvers (user context).
   userPermissions: (scope, permissions) => myPermissions(scope, permissions, 'user'),
-  allowSameApprover: process.env.ACCORD_DEMO_ALLOW_SAME_APPROVER === 'true',
+  allowSameApprover: ({ requester, provider }) =>
+    sameApproverAllowed(
+      {
+        enabled: () => demoModePort.enabled(),
+        demoProjectKeys: async () => (await demoLeadPort.accordProjects()).map((project) => project.projectKey),
+      },
+      { requester: requester.jiraProjectKey, provider: provider.jiraProjectKey },
+    ),
 };

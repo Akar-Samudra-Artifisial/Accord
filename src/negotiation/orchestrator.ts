@@ -399,13 +399,18 @@ export async function decide(deps: NegotiationDeps, input: DecisionInput): Promi
   }
 
   const otherTeamId = input.side === 'requester' ? request.providerTeamId : request.requesterTeamId;
-  if (!deps.allowSameApprover) {
-    const before = approvalState(await deps.store.listApprovals(request.id), request.requesterTeamId, request.providerTeamId);
-    const other = otherTeamId === request.requesterTeamId ? before.requester : before.provider;
-    if (other?.decision === 'approve' && other.actorAccountId === input.accountId) {
+  const before = approvalState(await deps.store.listApprovals(request.id), request.requesterTeamId, request.providerTeamId);
+  const otherApproval = otherTeamId === request.requesterTeamId ? before.requester : before.provider;
+  // True only when demo mode lets the same account approve for both teams; recorded in the audit entry.
+  let demoMode = false;
+  if (otherApproval?.decision === 'approve' && otherApproval.actorAccountId === input.accountId) {
+    const otherTeam = await requireTeam(deps, otherTeamId);
+    const teams = input.side === 'requester' ? { requester: team, provider: otherTeam } : { requester: otherTeam, provider: team };
+    if (!(await deps.allowSameApprover(teams))) {
       await deps.store.audit('request', request.id, 'decision-denied', input.accountId, { side: input.side, teamId, rule: 'dual-control' });
       throw new NegotiationError('Dual control: you already approved for the other team, so another lead must approve for this team.');
     }
+    demoMode = true;
   }
 
   if (!(await deps.store.addApproval(approval, 'awaiting-approval'))) {
@@ -416,6 +421,7 @@ export async function decide(deps: NegotiationDeps, input: DecisionInput): Promi
     teamId,
     side: input.side,
     permissions: permissionCheck,
+    ...(demoMode ? { demoMode: true } : {}),
   });
 
   const state = approvalState(await deps.store.listApprovals(request.id), request.requesterTeamId, request.providerTeamId);

@@ -7,6 +7,7 @@ import ForgeReconciler, {
   DynamicTable,
   Heading,
   Inline,
+  Label,
   Link,
   Lozenge,
   Modal,
@@ -24,6 +25,7 @@ import ForgeReconciler, {
   Tabs,
   Text,
   Textfield,
+  Toggle,
   Tooltip,
   xcss,
 } from '@forge/react';
@@ -270,6 +272,30 @@ const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>;
   const [seedBlocked, setSeedBlocked] = useState<string | null>(null);
   const [cleanOpen, setCleanOpen] = useState(false);
   const [notRestored, setNotRestored] = useState<string[]>([]);
+  const [demoMode, setDemoMode] = useState<{ enabled: boolean; canManage: boolean } | null>(null);
+
+  const loadDemoMode = async () => {
+    const result = await call<{ enabled: boolean; canManage: boolean }>('getDemoMode');
+    if (result.ok) setDemoMode({ enabled: result.enabled, canManage: result.canManage });
+  };
+
+  const toggleDemoMode = async () => {
+    if (!demoMode) return;
+    setAction('setDemoMode');
+    setError(null);
+    setNotice(null);
+    const result = await call<{ enabled: boolean }>('setDemoMode', { enabled: !demoMode.enabled });
+    if (!result.ok) setError(result.error);
+    else {
+      setNotice(
+        result.enabled
+          ? 'Demo mode is on: one person may approve a deal sheet for both teams.'
+          : 'Demo mode is off: dual control applies again.',
+      );
+    }
+    await loadDemoMode();
+    setAction(null);
+  };
 
   const cleanDemo = async () => {
     setCleanOpen(false);
@@ -305,6 +331,7 @@ const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>;
 
   useEffect(() => {
     void loadLeadState();
+    void loadDemoMode();
   }, []);
 
   const makeMeLead = async () => {
@@ -430,6 +457,31 @@ const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>;
           {`Demo project lead: ${leadState.projects.map((p) => `${p.projectKey} ${p.isLead ? '(you)' : '(someone else)'}`).join(', ')}. "Make me the demo lead" changes only the Accord demo projects.`}
         </Text>
       ) : null}
+      {demoMode ? (
+        <SectionMessage appearance={demoMode.enabled ? 'warning' : 'information'} title={demoMode.enabled ? 'Demo mode is on' : 'Demo mode is off'}>
+          <Text>
+            Demo mode turns off dual control for requests between the Accord demo projects only: one person may approve
+            such a deal sheet for both teams, so a single evaluator can walk through a full negotiation. Requests that
+            involve any other team always need a separate approver per team. Use it for evaluation only. Every change of
+            this switch and every approval it allows is recorded in the Audit tab. It stays off until an admin turns it
+            on; "Clean demo data" does not change it.
+          </Text>
+          {demoMode.canManage ? (
+            <Inline space="space.100" alignBlock="center">
+              <Toggle
+                id="accord-demo-mode"
+                label="Demo mode: allow the same approver for both teams"
+                isChecked={demoMode.enabled}
+                isDisabled={running || action !== null}
+                onChange={() => void toggleDemoMode()}
+              />
+              <Label labelFor="accord-demo-mode">Allow the same approver for both teams</Label>
+            </Inline>
+          ) : (
+            <Text color="color.text.subtle">Only a Jira site admin or an admin of every Accord demo project can change demo mode.</Text>
+          )}
+        </SectionMessage>
+      ) : null}
       <Text>
         Scenario: Accord adds just enough Highest-priority bugs to the active Payments sprint to push the nearest Payments
         contract past its agreed date (at most 8), then runs the monitor. The contract turns At risk and both issues get
@@ -500,7 +552,7 @@ const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>;
             </ModalHeader>
             <ModalBody>
               <Text>
-                {`This deletes every request, contract, renegotiation and escalation between ${listKeys((leadState?.projects ?? []).map((p) => p.projectKey)) || 'the demo projects'}, moves the demo bugs to the backlog, archives the deliverables Accord created, removes the blocks links it added and the comments the Accord app posted on demo issues. Issues and comments written by people are never deleted. Older audit events are hidden from the Audit tab but kept in storage.`}
+                {`This deletes every request, contract, renegotiation and escalation between ${listKeys((leadState?.projects ?? []).map((p) => p.projectKey)) || 'the demo projects'}, moves the demo bugs to the backlog, archives the deliverables Accord created, removes the blocks links it added and the comments the Accord app posted on demo issues. Issues and comments written by people are never deleted. Older audit events are hidden from the Audit tab but kept in storage. Demo mode stays ${demoMode?.enabled ? 'on' : 'off'}; change it with the demo mode switch.`}
               </Text>
             </ModalBody>
             <ModalFooter>

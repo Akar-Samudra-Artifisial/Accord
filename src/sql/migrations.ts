@@ -251,6 +251,17 @@ export const MIGRATIONS: ReadonlyArray<{ name: string; statement: string }> = [
       INDEX idx_link_suggestions_blocked (blocked_issue_key, status)
     )`,
   },
+  {
+    // Per-installation settings, e.g. demo mode (one account may approve for both teams). A missing row means
+    // the default (off). `key` is a reserved word in MySQL, hence setting_key.
+    name: 'v020_create_app_settings',
+    statement: `CREATE TABLE IF NOT EXISTS app_settings (
+      setting_key VARCHAR(64) PRIMARY KEY,
+      value VARCHAR(255) NOT NULL,
+      updated_by VARCHAR(128) NULL,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
+  },
 ];
 
 /** Applies pending migrations; safe to call on every cold start. */

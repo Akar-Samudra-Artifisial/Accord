@@ -1,6 +1,6 @@
 {
   "name": "accord",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Accord — negotiated cross-team dependency contracts for Jira, built on Atlassian Forge (Codegeist 2026).",
   "license": "MIT",
@@ -28,5 +28,9 @@
     "@types/react": "^18.3.31",
     "typescript": "^5.9.3",
     "vitest": "^5.1.0"
+  },
+  "overrides": {
+    "prosemirror-view": "1.42.9",
+    "prosemirror-model": "1.25.12"
   }
 }

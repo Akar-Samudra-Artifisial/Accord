@@ -1,5 +1,4 @@
 import { route } from '@forge/api';
-import { Queue } from '@forge/events';
 import { AtlassianApiError, isNotFound, jira, type Principal } from '../atlassian/http';
 import { createSprint, listSprints, moveIssuesToSprint, updateSprint, type JiraSprint } from '../jira/sprints';
 import { createIssues, listSprintIssues, searchIssues } from '../jira/issues';
@@ -25,8 +24,6 @@ import {
   type SeedStep,
 } from './seed-data';
 
-export const SEED_QUEUE_KEY = 'accord-demo-seed';
-
 export interface SeedContext {
   /** Lead/approver of the demo projects. */
   leadAccountId: string | null;
@@ -43,8 +40,6 @@ export interface SeedStepStatus {
   detail: string | null;
   updatedAt: string | null;
 }
-
-const todayIso = () => new Date().toISOString().slice(0, 10);
 
 async function setStatus(step: SeedStep, status: SeedStepStatus['status'], detail: string | null): Promise<void> {
   await run(
@@ -384,68 +379,3 @@ export async function executeSeedStep(step: SeedStep, context: SeedContext): Pro
   }
 }
 
-export interface SeedEvent extends Record<string, unknown> {
-  kind: 'seed-step';
-  step: SeedStep;
-  leadAccountId: string | null;
-  adoptExisting: boolean;
-  today: string;
-}
-
-const queue = new Queue({ key: SEED_QUEUE_KEY });
-
-export async function enqueueSeedStep(event: Omit<SeedEvent, 'kind'>): Promise<string> {
-  const { jobId } = await queue.push({ body: { kind: 'seed-step', ...event } });
-  return jobId;
-}
-
-export function nextSeedStep(step: SeedStep): SeedStep | null {
-  const index = SEED_STEPS.indexOf(step);
-  return index >= 0 && index < SEED_STEPS.length - 1 ? SEED_STEPS[index + 1] : null;
-}
-
-/**
- * Starts the demo seed. `inlineSteps` run synchronously first (resolvers use
- * this to create projects as the signed-in admin); the rest run on the queue.
- */
-export async function startSeed(options: {
-  leadAccountId: string | null;
-  adoptExisting: boolean;
-  inlineProjectPrincipals?: Principal[];
-}): Promise<{ jobId: string | null; failedStep: SeedStep | null }> {
-  const today = todayIso();
-  for (const step of SEED_STEPS) await setStatus(step, 'pending', null);
-  let first: SeedStep = SEED_STEPS[0];
-  if (options.inlineProjectPrincipals) {
-    const context: SeedContext = {
-      leadAccountId: options.leadAccountId,
-      adoptExisting: options.adoptExisting,
-      projectPrincipals: options.inlineProjectPrincipals,
-      today,
-    };
-    const projectSteps = SEED_STEPS.filter((step) => step.startsWith('project:'));
-    for (const step of projectSteps) {
-      if (!(await executeSeedStep(step, context))) return { jobId: null, failedStep: step };
-    }
-    first = SEED_STEPS[projectSteps.length];
-  }
-  const jobId = await enqueueSeedStep({
-    step: first,
-    leadAccountId: options.leadAccountId,
-    adoptExisting: options.adoptExisting,
-    today,
-  });
-  return { jobId, failedStep: null };
-}
-
-/** Queue consumer body: run the step, then enqueue the next one (one step per invocation, NFR-6). */
-export async function handleSeedEvent(event: SeedEvent): Promise<void> {
-  const ok = await executeSeedStep(event.step, {
-    leadAccountId: event.leadAccountId,
-    adoptExisting: event.adoptExisting,
-    projectPrincipals: ['app'],
-    today: event.today,
-  });
-  const next = nextSeedStep(event.step);
-  if (ok && next) await enqueueSeedStep({ ...event, step: next });
-}

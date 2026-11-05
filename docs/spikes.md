@@ -172,6 +172,19 @@ Plan:
 - Visual check of the byline popup in the browser is still pending.
 
 - Queue `400` resolved (see spike 3): M3 negotiation rounds can use the `accord-negotiation` queue.
-- `accord-dev-diag` and the `dev-diag` function must be removed before any production deploy (they also make the
-  version ineligible for Runs on Atlassian).
+- Done in 1.0.0 (M7): `accord-dev-diag` and the `dev-diag` function are removed (see "Production preparation").
+
+## Production preparation (M7, 1.0.0)
+
+- Removed the `accord-dev-diag` web trigger, the `dev-diag` function and `src/diag/`. The `?action=…` diag
+  commands in this document no longer exist; live checks now run in the browser (UI, Rovo, MCP).
+- Removed the `accord-demo-seed` queue, its consumer and `startSeed`/`enqueueSeedStep`: the Demo tab already runs the
+  seed one step per resolver call (`runSeedStep`). The unused `getDemoOptions` resolver is gone too.
+- The env variable `ACCORD_DEMO_ALLOW_SAME_APPROVER` is replaced by a per-installation demo mode switch stored in
+  Forge SQL (`app_settings`, migration `v020_create_app_settings`): admin only (site admin or admin of every Accord
+  demo project), off by default, audited as `demo-mode-enabled`/`demo-mode-disabled`; an approval it allows carries
+  `demoMode: true`. `ACCORD_DIAG_ENABLED`, `ACCORD_DIAG_KEY` and `ACCORD_DEMO_ALLOW_SAME_APPROVER` were unset in
+  `development`; the password manager item for the diag key is no longer used.
+- Scopes unchanged (no major version, no `forge install --upgrade`). The seed scope separation plan above is not
+  pursued: the Demo tab stays in production, admin only.
 - The spike page "Accord spike page" in space ACCORD can be deleted manually.

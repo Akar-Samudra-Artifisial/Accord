@@ -322,7 +322,7 @@ export function harness(context: Partial<PlanningContext> = {}): Harness {
     today: () => '2026-11-05',
     // Approvers hold every Jira permission unless a test narrows this.
     userPermissions: async (_scope, permissions) => new Set(permissions),
-    allowSameApprover: false,
+    allowSameApprover: async () => false,
     teams: {
       getTeam: async (id) => teams.get(id) ?? null,
       planningContext: async () => {

@@ -8,6 +8,7 @@ import {
   approvalsByRequest,
   auditFor,
   lastDemoClean,
+  demoModeChanges,
   contractsForRequests,
   listContracts,
   listEdges,
@@ -157,10 +158,7 @@ function readString(payload: Record<string, unknown>, name: string): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-/**
- * `as` is `user` for every UI and Rovo call; only the development diag web trigger passes `app`
- * (no user context there) together with a fixed creator id.
- */
+/** `as` is `user` for every UI, Rovo and MCP call. */
 export async function createRequestFromIssue(payload: Record<string, unknown>, accountId: string | undefined, as: Principal = 'user') {
   const prepared = await prepareRequest(payload, accountId, as);
   if ((await recentRequestCount(prepared.createdBy)) >= MAX_REQUESTS_PER_HOUR) {
@@ -277,7 +275,7 @@ export async function dealSheet(payload: Record<string, unknown>, accountId: str
     provider,
     viewerSides: sides,
     visibleKeys: (keys) => visibleIssueKeys(keys, as),
-    sameApproverAllowed: productionDeps.allowSameApprover,
+    sameApproverAllowed: await productionDeps.allowSameApprover({ requester, provider }),
     canRetry: await canRetry(request, sides, accountId),
     viewerAccountId: accountId,
   });
@@ -714,7 +712,7 @@ export async function auditTrail(accountId: string | undefined): Promise<AuditRo
   // A demo clean starts the trail over: older entries stay in audit_log but are hidden here.
   const cleaned = await lastDemoClean();
   const recent = await auditFor([...titles.keys()], [...contractTitles.keys()].map(Number), 50, cleaned?.id ?? null);
-  const entries = auditTimeline(recent, cleaned, 50);
+  const entries = auditTimeline([...recent, ...(await demoModeChanges())], cleaned, 50);
   const approvedIds = entries.filter((entry) => entry.action === 'approved').map((entry) => Number(approvedOptionId(entry.payload)));
   const options = await optionsByIds(approvedIds);
   const approverIds = new Set([...approvers.values()].flat());
@@ -724,7 +722,9 @@ export async function auditTrail(accountId: string | undefined): Promise<AuditRo
       approverIds,
       subjectOf: (item) =>
         item.entityType === 'demo'
-          ? 'Demo data'
+          ? item.entityId === 'mode'
+            ? 'Demo mode'
+            : 'Demo data'
           : ((item.entityType === 'contract' ? contractTitles.get(item.entityId) : titles.get(item.entityId)) ?? 'Unknown request'),
       optionLabel: (optionId) => {
         const option = options.get(optionId);

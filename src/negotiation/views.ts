@@ -52,7 +52,7 @@ export interface DealSheetView {
   agreedOptionId: number | null;
   /** Sides the current user may decide for (one person can be lead of both teams). */
   canDecideAs: Side[];
-  /** Demo switch ACCORD_DEMO_ALLOW_SAME_APPROVER is on: one account may approve for both teams. */
+  /** Demo mode is on (Demo tab): one account may approve for both teams. */
   sameApproverAllowed: boolean;
   /** `negotiating`/`approved`/`failed` without progress: a lead may re-queue the job. */
   canRetry: boolean;

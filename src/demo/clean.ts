@@ -4,7 +4,7 @@ import { plural } from '../format/text';
 /** Label added to Accord-created deliverables when the demo data is cleaned (issues are never deleted). */
 export const ARCHIVED_LABEL = 'accord-archived';
 /** Label every deliverable Accord creates carries (`ensureDeliverable`). */
-export const ACCORD_LABEL = 'accord';
+export const DELIVERABLE_LABEL = 'accord';
 
 export interface CleanRequestRow {
   id: string;
@@ -134,7 +134,7 @@ export async function cleanDemoData(
     const state = await port.issueState(issueKey);
     if (!state || state.labels.includes(ARCHIVED_LABEL)) continue;
     // Only issues Accord created: recorded in the audit, or carrying the label every Accord deliverable gets.
-    if (!recorded.has(issueKey) && !state.labels.includes(ACCORD_LABEL)) continue;
+    if (!recorded.has(issueKey) && !state.labels.includes(DELIVERABLE_LABEL)) continue;
     await port.archiveDeliverable(issueKey, state.done);
     deliverablesArchived += 1;
   }

@@ -16,7 +16,7 @@ export interface ActionContext {
   accountId?: string;
 }
 
-/** Who the services act for: the Rovo user (`as: 'user'`), or the app for the development diag trigger. */
+/** Who the services act for: always the invoking Rovo/MCP user (`as: 'user'`, see `viewerFromContext`). */
 export interface Viewer {
   accountId: string | undefined;
   as: Principal;
@@ -185,7 +185,7 @@ async function guarded(operation: string, work: () => Promise<unknown>): Promise
   }
 }
 
-/** Builds the action handlers; Rovo entry points pass `viewerFromContext(context)`, the diag trigger an app viewer. */
+/** Builds the action handlers; Rovo and MCP entry points pass `viewerFromContext(context)`. */
 export function createActionHandlers(services: ActionServices) {
   /** Resolves a team reference against the registered teams, then runs `work` with the Accord key. */
   const withTeam = (operation: string, viewer: Viewer, ref: string, inputName: string, work: (teamKey: string) => Promise<unknown>) =>
