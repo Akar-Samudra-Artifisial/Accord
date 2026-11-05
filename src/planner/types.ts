@@ -97,6 +97,12 @@ export interface PlannerWorkAhead {
   countedSprintIds: string[];
   /** Deliverables of other contracts: never shifted, the agreed work stays where it is. */
   pinnedKeys?: string[];
+  /**
+   * The provider's other open contracts in the monitor's order (agreed latest date, then id), included in
+   * `issues`. The monitor puts this request after those agreed by its own latest date (ties: existing first)
+   * and before the rest, which it pushes back. Without it every contract counts as ahead.
+   */
+  contracts?: Array<{ agreedDateMax: IsoDate; issues: number }>;
 }
 
 export type OptionKind = 'on-time' | 'on-time-with-shift' | 'partial' | 'later' | 'reject';

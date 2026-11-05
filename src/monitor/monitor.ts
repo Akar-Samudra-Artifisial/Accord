@@ -188,13 +188,13 @@ export interface ProviderPlanningDeps {
   jira: Pick<MonitorJira, 'commitments' | 'doneIssueKeys'>;
 }
 
-async function loadProviderPlanning(deps: ProviderPlanningDeps, teamId: string) {
+async function loadProviderPlanning(deps: ProviderPlanningDeps, teamId: string, withoutContracts = false) {
   const team = await deps.teams.getTeam(teamId);
   if (!team) throw new Error(`Provider team ${teamId} is not registered`);
   const contracts = (await deps.store.contractsForProvider(teamId))
     .filter((row) => MONITORED_STATUSES.includes(row.contract.status))
     .sort(orderContracts);
-  if (contracts.length === 0) return null;
+  if (contracts.length === 0 && !withoutContracts) return null;
 
   const deliverables = contracts.map((row) => row.contract.deliverableIssueKey).filter((key): key is string => key !== null);
   const [capacity, planning, done] = [
@@ -216,16 +216,18 @@ async function loadProviderPlanning(deps: ProviderPlanningDeps, teamId: string) 
 export type ProviderWorkAhead = RenegotiationWorkAhead;
 
 /**
- * Work the provider finishes before `contractId` when that contract is placed after every other open
- * contract (the latest position a renegotiated date can take), so a date the planner offers on this basis
- * is never projected as missed by the monitor on the same data. Null without capacity data.
+ * Work the provider finishes before `contractId` under the monitor rule: committed issues plus every other
+ * open contract, listed in monitor order in `contracts` so the planner counts only those agreed by an
+ * option's date as ahead and keeps the later ones on track; a date the planner offers on this basis is never
+ * projected as missed by the monitor on the same data. `contractId` null = a new request (also without any
+ * open contract). Null without capacity data.
  */
 export async function providerWorkAhead(
   deps: Pick<MonitorDeps, 'store' | 'teams' | 'jira'>,
   teamId: string,
-  contractId: number,
+  contractId: number | null,
 ): Promise<ProviderWorkAhead | null> {
-  const loaded = await loadProviderPlanning(deps, teamId);
+  const loaded = await loadProviderPlanning(deps, teamId, contractId === null);
   if (!loaded || !loaded.enoughData) return null;
   const { contracts, capacity, planning, done, committedIssues } = loaded;
   const deliverables = new Set(contracts.map((row) => row.contract.deliverableIssueKey));
@@ -242,6 +244,8 @@ export async function providerWorkAhead(
     countedKeys: counted.map((item) => item.key),
     countedSprintIds: pickActiveAndNext(planning.sprints).map((sprint) => sprint.id),
     pinnedKeys: others.map((row) => row.contract.deliverableIssueKey).filter((key): key is string => key !== null),
+    // Monitor order (orderContracts): the planner places the request among these by its agreed date.
+    contracts: others.map((row) => ({ agreedDateMax: row.contract.agreedDateMax, issues: SIZE_ISSUES[row.request.size] })),
     criticalBugs: counted.filter((item) => item.issueType.toLowerCase() === 'bug' && item.priority.toLowerCase() === 'highest').length,
   };
 }

@@ -152,19 +152,30 @@ export async function runRound1(deps: NegotiationDeps, requestId: string): Promi
     (planning ??= deps.teams
       .planningContext(provider, request.neededBy)
       .then((loaded) => (replanned ? { ...loaded, commitments: loaded.commitments.filter((item) => item.key !== replanned) } : loaded)));
-  // A renegotiation plans with the monitor's projection (NFR-1): its options are never dates the monitor
-  // already projects as missed, so an applied renegotiation is not at risk again on the same data.
+  // Every request plans with the monitor's projection (NFR-1): its options are never dates the monitor
+  // already projects as missed, so an applied contract is on track on the same data. The other open
+  // contracts are ahead only when agreed by the option's date (monitor order); later ones must stay on track.
   let ahead: Promise<RenegotiationWorkAhead | null> | null = null;
-  const workAhead = () => (ahead ??= renegotiation ? deps.monitor.workAhead(provider.id, renegotiation.contractId) : Promise.resolve(null));
+  const workAhead = () => (ahead ??= deps.monitor.workAhead(provider.id, renegotiation ? renegotiation.contractId : null));
   const input = async (variation?: PlannerVariation) => {
     const found = await workAhead();
     const base = plannerInput(deps, request, await context(), variation);
     return found
-      ? { ...base, workAhead: { issues: found.issues, countedKeys: found.countedKeys, countedSprintIds: found.countedSprintIds, pinnedKeys: found.pinnedKeys } }
+      ? {
+          ...base,
+          workAhead: {
+            issues: found.issues,
+            countedKeys: found.countedKeys,
+            countedSprintIds: found.countedSprintIds,
+            pinnedKeys: found.pinnedKeys,
+            contracts: found.contracts,
+          },
+        }
       : base;
   };
+  // Only a renegotiation's deal sheet explains the work ahead (critical bugs, FR-14).
   const aheadSummary = async () => {
-    const found = await workAhead();
+    const found = renegotiation ? await workAhead() : null;
     if (!found) return {};
     const { issues, committedIssues, contractIssues, criticalBugs, pessimistic } = found;
     return { workAhead: { issues, committedIssues, contractIssues, criticalBugs, pessimistic } };

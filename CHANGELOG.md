@@ -4,6 +4,15 @@ All notable changes are recorded here. The format follows Keep a Changelog; vers
 
 ## [Unreleased]
 
+### Fixed
+- A new contract on freshly seeded demo data was At risk right after it was applied (agreed Nov 15, projected Nov 29) and the deal sheet had only one option: the planner now uses the contract monitor's projection for every request, not only renegotiations, so it never offers a date the monitor already projects as missed. On the seed data a short-notice request gets "on time with a shift" plus "later", and "Reset demo bugs" brings the contract back On track.
+- Shifting work for an option now moves it out of the active and next sprint when that is what lowers the monitor's projection, instead of into the next sprint where it still counted.
+- A renegotiation after "Add critical bugs to Payments" on fresh seed data offered only "Later date": shiftable work in the next sprint (which the monitor counts as work ahead) can now be moved out too, so the deal sheet also offers "On time with a shift". Red-line work, including the demo bugs, is never moved.
+- The planner orders the provider's other contracts like the monitor (agreed latest date, then age): only contracts agreed by an option's date count as work ahead, and a date that would push an on-track contract at risk is not offered.
+- Demo tab: "Make me the demo lead", "Clean demo data" and the demo mode switch appear as soon as the seed finishes, without a reload.
+- Audit tab refreshes when it is opened and after decisions or demo actions, not only on Refresh.
+- README: judge install steps name the "Get app" button, the Confluence tick box, the required "What do you need?" field and the exact button names, and note that Rovo agents and MCP need a site with Rovo.
+
 ## [1.0.0] - 2026-11-05
 
 ### Added
