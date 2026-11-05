@@ -133,9 +133,17 @@ export async function createIssue(issue: NewIssue): Promise<string> {
   return response.key;
 }
 
-/** Plain-text comment rendered as one ADF paragraph per line. */
-export async function addComment(issueKey: string, text: string): Promise<string> {
-  const content = text.split('\n').map((line) => ({ type: 'paragraph', content: [{ type: 'text', text: line }] }));
+/**
+ * Plain-text comment rendered as one ADF paragraph per line. Optional `mentions` (account ids,
+ * validated by the caller) are added as a leading paragraph of ADF mention nodes.
+ */
+export async function addComment(issueKey: string, text: string, mentions: readonly string[] = []): Promise<string> {
+  const lines = text.split('\n').map((line) => ({ type: 'paragraph', content: [{ type: 'text', text: line }] }));
+  const mentionNodes = mentions.flatMap((id, index) => [
+    ...(index > 0 ? [{ type: 'text', text: ' ' }] : []),
+    { type: 'mention', attrs: { id } },
+  ]);
+  const content = mentionNodes.length > 0 ? [{ type: 'paragraph', content: mentionNodes }, ...lines] : lines;
   const response = await jira<{ id: string }>(route`/rest/api/3/issue/${issueKey}/comment`, {
     method: 'POST',
     body: { body: { type: 'doc', version: 1, content } },

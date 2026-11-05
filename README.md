@@ -52,7 +52,10 @@ forge install         # pick a Jira + Confluence developer site
 - Unset the development-only variables: `forge variables unset -e <env> ACCORD_DIAG_ENABLED` and
   `forge variables unset -e <env> ACCORD_DEMO_ALLOW_SAME_APPROVER`. Never set `ACCORD_DEMO_ALLOW_SAME_APPROVER` in
   staging or production: without it, one account cannot approve for both teams (dual control).
-- Separate the demo seed scopes (project/space creation) from the production build (deferred to M4).
+- Remove the seed-only scopes `manage:jira-project` and `manage:jira-configuration` (and `write:space:confluence`
+  if charter spaces are created beforehand) together with `src/demo/`; see "Scope usage" in `docs/spikes.md`.
+  `write:board-scope:jira-software` stays (backlog moves during apply-contract). Run `forge install --upgrade`
+  after changing scopes.
 
 Development only: `forge variables set -e development ACCORD_DIAG_ENABLED true` and
 `forge variables set -e development ACCORD_DEMO_ALLOW_SAME_APPROVER true` (single-account demo; the deal sheet shows

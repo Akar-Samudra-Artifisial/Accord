@@ -179,6 +179,34 @@ export const MIGRATIONS: ReadonlyArray<{ name: string; statement: string }> = [
     name: 'v014_index_contracts_deliverable_issue',
     statement: 'CREATE INDEX IF NOT EXISTS idx_contracts_deliverable_issue ON contracts (deliverable_issue_key)',
   },
+  {
+    // Monitor notification markers: `seq` counts announced status changes per contract; the unique key makes
+    // the claim of one comment per (change, issue) atomic (INSERT IGNORE + affectedRows).
+    name: 'v015_create_contract_notifications',
+    statement: `CREATE TABLE IF NOT EXISTS contract_notifications (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      contract_id BIGINT NOT NULL,
+      seq INT NOT NULL,
+      status VARCHAR(16) NOT NULL,
+      projected_date DATE NULL,
+      issue_key VARCHAR(64) NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_contract_notification (contract_id, seq, issue_key)
+    )`,
+  },
+  {
+    // Carry over notifications already posted under the audit-marker scheme (`notify:<n>:<issue>`).
+    name: 'v016_backfill_contract_notifications',
+    statement: `INSERT IGNORE INTO contract_notifications (contract_id, seq, status, projected_date, issue_key)
+      SELECT CAST(entity_id AS SIGNED),
+             CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(action, ':', 2), ':', -1) AS SIGNED),
+             JSON_UNQUOTE(JSON_EXTRACT(payload, '$.status')),
+             NULL,
+             JSON_UNQUOTE(JSON_EXTRACT(payload, '$.issueKey'))
+      FROM audit_log
+      WHERE entity_type = 'contract' AND action LIKE 'notify:%'
+        AND JSON_EXTRACT(payload, '$.status') IS NOT NULL AND JSON_EXTRACT(payload, '$.issueKey') IS NOT NULL`,
+  },
 ];
 
 /** Applies pending migrations; safe to call on every cold start. */

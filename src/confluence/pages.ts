@@ -63,6 +63,26 @@ export async function createPage(
   });
 }
 
+/** New version of an existing page (`version` = current version number). */
+export async function updatePage(
+  page: Pick<Page, 'id' | 'title'> & { version: { number: number } },
+  storage: string,
+  message: string,
+  as: Principal = 'app',
+): Promise<Page> {
+  return confluence<Page>(route`/wiki/api/v2/pages/${page.id}`, {
+    method: 'PUT',
+    as,
+    body: {
+      id: page.id,
+      status: 'current',
+      title: page.title,
+      body: { representation: 'storage', value: storage },
+      version: { number: page.version.number + 1, message },
+    },
+  });
+}
+
 /** Labels are write-only in the v1 API. */
 export async function addCharterLabel(pageId: string, as: Principal = 'app'): Promise<void> {
   await confluence<unknown>(route`/wiki/rest/api/content/${pageId}/label`, {

@@ -97,6 +97,17 @@ export function formatRule(rule: Rule): string {
   return `${RULE_PREFIX[rule.field]}: ${rule.value}`;
 }
 
+const APPROVERS_SECTION = /(<h2[^>]*>\s*Approvers\s*<\/h2>)([\s\S]*?)(?=<h2[\s>]|$)/i;
+
+/**
+ * Replaces only the Approvers section of a charter page; the other sections stay as written.
+ * Returns null when the page has no Approvers heading.
+ */
+export function replaceApprovers(storage: string, accountIds: readonly string[]): string | null {
+  if (!APPROVERS_SECTION.test(storage) || accountIds.length === 0) return null;
+  return storage.replace(APPROVERS_SECTION, (_match, heading: string) => `${heading}${list('ul', accountIds.map(mention))}`);
+}
+
 /** Storage-format body of a new charter page. */
 export function buildCharterStorage(input: CharterTemplateInput): string {
   const sections: Record<CharterFieldKey, string> = {

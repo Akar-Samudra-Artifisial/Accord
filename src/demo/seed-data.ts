@@ -16,7 +16,11 @@ export interface DemoIssue {
 }
 
 export interface DemoTeam {
-  projectKey: 'MOB' | 'PAY';
+  /**
+   * Logical team slot: seed step id suffix and preferred Jira project key. The key actually used
+   * is resolved at seed time (see projectKeyCandidates) because the slot key may be taken.
+   */
+  slot: 'MOB' | 'PAY';
   name: string;
   sprintNumbers: { active: number; next: number };
   activeIssues: DemoIssue[];
@@ -42,7 +46,7 @@ const issue = (
 
 export const DEMO_TEAMS: readonly DemoTeam[] = [
   {
-    projectKey: 'MOB',
+    slot: 'MOB',
     name: 'Mobile',
     sprintNumbers: { active: 27, next: 28 },
     activeIssues: [
@@ -69,7 +73,7 @@ export const DEMO_TEAMS: readonly DemoTeam[] = [
     simulatedThroughput: [6, 7, 7, 5, 8, 6],
   },
   {
-    projectKey: 'PAY',
+    slot: 'PAY',
     name: 'Payments',
     sprintNumbers: { active: 41, next: 42 },
     activeIssues: [
@@ -79,6 +83,9 @@ export const DEMO_TEAMS: readonly DemoTeam[] = [
       issue('Ledger cleanup', 'Task', 'Low', ['tech-debt']),
       issue('Remove legacy payout cron job', 'Task', 'Medium', ['tech-debt']),
       issue('Rounding error in refund preview', 'Bug', 'Medium'),
+      // Shiftable (Medium, no label): with the two demo critical bugs it fills Sprint 41, so a
+      // short-notice request needs the on-time-with-shift option (sprint-shift scenario, M4).
+      issue('Chargeback webhook retries', 'Story', 'Medium'),
     ],
     nextIssues: [
       issue('Ledger migration phase 2: schema', 'Story', 'High', ['ledger-migration']),
@@ -116,14 +123,14 @@ export function demoSprintDates(today: string) {
 }
 
 /** Simulated closed sprints right before the active sprint (oldest first). */
-export function simulatedHistory(team: DemoTeam, today: string) {
+export function simulatedHistory(team: DemoTeam, today: string, projectKey: string = team.slot) {
   const { activeStart } = demoSprintDates(today);
   const count = team.simulatedThroughput.length;
   return team.simulatedThroughput.map((completedCount, index) => {
     const sprintNumber = team.sprintNumbers.active - (count - index);
     const endDate = addDaysIso(activeStart, -1 - SPRINT_LENGTH_DAYS * (count - 1 - index));
     return {
-      sprintId: `sim-${team.projectKey}-${sprintNumber}`,
+      sprintId: `sim-${projectKey}-${sprintNumber}`,
       sprintName: `${team.name} Sprint ${sprintNumber}`,
       completedCount,
       endDate,
@@ -144,8 +151,37 @@ export const SEED_STEPS = [
 
 export type SeedStep = (typeof SEED_STEPS)[number];
 
-export function demoTeam(projectKey: string): DemoTeam {
-  const team = DEMO_TEAMS.find((candidate) => candidate.projectKey === projectKey);
-  if (!team) throw new Error(`Unknown demo team ${projectKey}`);
+export function demoTeam(slot: string): DemoTeam {
+  const team = DEMO_TEAMS.find((candidate) => candidate.slot === slot);
+  if (!team) throw new Error(`Unknown demo team ${slot}`);
   return team;
+}
+
+export const MAX_KEY_SUFFIX = 9;
+
+/** `base`, then `alt`, `alt2` … `alt9` (without duplicates when base equals alt). */
+export function keyCandidates(base: string, alt: string): string[] {
+  return [...new Set([base, alt, ...Array.from({ length: MAX_KEY_SUFFIX - 1 }, (_, i) => `${alt}${i + 2}`)])];
+}
+
+/** Preferred key first, then AC<slot>, AC<slot>2 … (uppercase, 2–10 characters). */
+export function projectKeyCandidates(slot: string): string[] {
+  return keyCandidates(slot, `AC${slot}`);
+}
+
+export type KeyState = 'missing' | 'accord' | 'foreign';
+
+/**
+ * First candidate that is free or already owned by Accord. Stateless and deterministic, so every
+ * seed step resolves the same key again (a key created by Accord turns from missing into accord).
+ */
+export async function pickKey(
+  candidates: readonly string[],
+  probe: (key: string) => Promise<KeyState>,
+): Promise<{ key: string; state: Exclude<KeyState, 'foreign'> }> {
+  for (const key of candidates) {
+    const state = await probe(key);
+    if (state !== 'foreign') return { key, state };
+  }
+  throw new Error(`All candidate keys are taken by other apps or users: ${candidates.join(', ')}`);
 }

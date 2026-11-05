@@ -4,6 +4,7 @@ import type {
   Approval,
   Contract,
   DependencyRequest,
+  InsertRequestResult,
   JiraPort,
   NegotiationDeps,
   NegotiationEvent,
@@ -13,6 +14,7 @@ import type {
   RoundRecord,
   StoredOption,
 } from '../../src/negotiation/types';
+import { OPEN_REQUEST_STATUSES } from '../../src/negotiation/types';
 
 export const MOB: Team = {
   id: 'team-MOB',
@@ -71,8 +73,20 @@ export class MemoryStore implements NegotiationStore {
     const found = this.requests.get(id);
     return found ? { ...found } : null;
   }
-  async insertRequest(value: DependencyRequest) {
+  /** Insert times (fake clock) used for the per-provider hourly limit. */
+  insertedAt = new Map<string, number>();
+
+  async insertRequest(value: DependencyRequest, limits = { maxPerProviderPerHour: Infinity }): Promise<InsertRequestResult> {
+    const all = [...this.requests.values()];
+    const duplicate = all.some(
+      (r) => r.sourceIssueKey === value.sourceIssueKey && r.providerTeamId === value.providerTeamId && OPEN_REQUEST_STATUSES.includes(r.status),
+    );
+    if (duplicate) return 'duplicate';
+    const lastHour = all.filter((r) => r.providerTeamId === value.providerTeamId && this.now - (this.insertedAt.get(r.id) ?? -Infinity) < 3600);
+    if (lastHour.length >= limits.maxPerProviderPerHour) return 'provider-limit';
     this.requests.set(value.id, { ...value });
+    this.insertedAt.set(value.id, this.now);
+    return 'inserted';
   }
   async transition(id: string, from: readonly DependencyRequest['status'][], to: DependencyRequest['status']) {
     const current = this.requests.get(id);
@@ -213,6 +227,8 @@ export interface Harness {
   jira: FakeJira;
   pushed: NegotiationEvent[];
   planningCalls: { count: number };
+  /** Provider team ids passed to `monitor.evaluateProvider`. */
+  monitorRuns: string[];
 }
 
 /** Payments planning context from the planner fixtures (capacity 9–10, share 50%). */
@@ -221,6 +237,7 @@ export function harness(context: Partial<PlanningContext> = {}): Harness {
   const jira = new FakeJira();
   const pushed: NegotiationEvent[] = [];
   const planningCalls = { count: 0 };
+  const monitorRuns: string[] = [];
   const base = baseInput();
   const planning: PlanningContext = {
     charter: { ...CHARTER, approvers: ['lead-payments'] },
@@ -234,6 +251,7 @@ export function harness(context: Partial<PlanningContext> = {}): Harness {
     store,
     jira,
     queue: { push: async (event) => void pushed.push(event) },
+    monitor: { evaluateProvider: async (teamId) => void monitorRuns.push(teamId) },
     today: () => '2026-11-05',
     allowSameApprover: false,
     teams: {
@@ -245,5 +263,5 @@ export function harness(context: Partial<PlanningContext> = {}): Harness {
       approvers: async (team) => (team.id === PAY.id ? ['lead-payments', 'lead-payments-project'] : ['lead-mobile']),
     },
   };
-  return { deps, store, jira, pushed, planningCalls };
+  return { deps, store, jira, pushed, planningCalls, monitorRuns };
 }

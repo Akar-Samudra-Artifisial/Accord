@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ForgeReconciler, {
   Button,
   ButtonGroup,
@@ -25,6 +25,7 @@ import ForgeReconciler, {
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
 import { DealSheetModal, StatusLozenge, type RequestStatus } from './dealsheet';
+import { changedKey, contractIsMoving, contractSignature, requestIsMoving, useBoundedPolling, useIdlePolling } from './polling';
 
 type Failure = { ok: false; error: string };
 
@@ -50,15 +51,32 @@ interface SeedStepStatus {
   detail: string | null;
 }
 
-const SEED_STEP_LABELS: Record<string, string> = {
-  'project:MOB': 'Create Mobile project (MOB) with a Scrum board',
-  'project:PAY': 'Create Payments project (PAY) with a Scrum board',
-  'sprints:MOB': 'Mobile: active and next sprint with issues',
-  'sprints:PAY': 'Payments: active and next sprint with issues',
-  'charter:MOB': 'Mobile charter page in Confluence',
-  'charter:PAY': 'Payments charter page in Confluence',
-  history: 'Simulated throughput history (6 sprints per team)',
-};
+interface SeedPlan {
+  projects: Array<{ slot: string; name: string; projectKey: string; state: 'create' | 'accord' | 'adopted' }>;
+  space: { key: string; state: 'create' | 'accord' };
+}
+
+/** Step ids are `<kind>:<slot>`; labels show the project keys the seed actually uses. */
+function seedStepLabel(step: string, plan: SeedPlan | null): string {
+  if (step === 'history') return 'Simulated throughput history (6 sprints per team)';
+  const [kind, slot] = step.split(':');
+  const project = plan?.projects.find((item) => item.slot === slot);
+  if (!project) return step;
+  if (kind === 'project') {
+    const verb = project.state === 'create' ? 'Create' : 'Use';
+    return `${verb} ${project.name} project (${project.projectKey}) with a Scrum board`;
+  }
+  if (kind === 'sprints') return `${project.name} (${project.projectKey}): active and next sprint with issues`;
+  if (kind === 'charter') return `${project.name} charter page in Confluence space ${plan?.space.key ?? ''}`;
+  return step;
+}
+
+const listKeys = (keys: string[]) => keys.join(' and ');
+
+interface DemoLeadState {
+  canManage: boolean;
+  projects: Array<{ projectKey: string; name: string; isLead: boolean }>;
+}
 
 async function call<T>(key: string, payload?: Record<string, unknown>): Promise<({ ok: true } & T) | Failure> {
   try {
@@ -202,24 +220,94 @@ const STATUS_LOZENGE: Record<SeedStepStatus['status'], { appearance: 'default' |
   failed: { appearance: 'removed', text: 'Failed' },
 };
 
-const DemoTab = ({ onSeeded }: { onSeeded: () => Promise<void> }) => {
+const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>; onMonitorQueued: () => void }) => {
   const [steps, setSteps] = useState<SeedStepStatus[] | null>(null);
+  const [plan, setPlan] = useState<SeedPlan | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [adoptExisting, setAdoptExisting] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [action, setAction] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [leadState, setLeadState] = useState<DemoLeadState | null>(null);
+
+  const loadLeadState = async () => {
+    const result = await call<DemoLeadState>('getDemoLeadState');
+    if (result.ok) setLeadState(result);
+  };
 
   useEffect(() => {
-    call<{ steps: SeedStepStatus[] }>('getSeedStatus').then((result) =>
-      result.ok ? setSteps(result.steps) : setError(result.error),
-    );
+    call<{ steps: SeedStepStatus[]; plan: SeedPlan }>('getSeedStatus', { adoptExisting }).then((result) => {
+      if (!result.ok) return setError(result.error);
+      setSteps(result.steps);
+      setPlan(result.plan);
+    });
+  }, [adoptExisting]);
+
+  useEffect(() => {
+    void loadLeadState();
   }, []);
+
+  const makeMeLead = async () => {
+    setAction('makeMeDemoLead');
+    setError(null);
+    setNotice(null);
+    const result = await call<{ results: Array<{ projectKey: string; leadChanged: boolean; approversChanged: boolean }> }>('makeMeDemoLead');
+    if (!result.ok) setError(result.error);
+    else {
+      const changed = result.results.filter((item) => item.leadChanged || item.approversChanged).map((item) => item.projectKey);
+      setNotice(
+        changed.length
+          ? `You are now the lead and charter approver of ${listKeys(result.results.map((item) => item.projectKey))}.`
+          : 'You already are the lead and charter approver of the demo projects.',
+      );
+      await loadLeadState();
+      await onSeeded();
+    }
+    setAction(null);
+  };
+
+  const demoAction = async (key: 'addDemoBugs' | 'resetDemoBugs' | 'runMonitorNow') => {
+    setAction(key);
+    setError(null);
+    setNotice(null);
+    const result = await call<{
+      added?: string[];
+      existing?: string[];
+      moved?: string[];
+      sprintName?: string | null;
+      deliverableIssueKey?: string | null;
+      queuedTeams?: number;
+    }>(key);
+    if (!result.ok) setError(result.error);
+    else if (key === 'runMonitorNow') {
+      setNotice(`Monitor queued for ${result.queuedTeams ?? 0} provider team(s). Open Contracts in a few seconds to see the result.`);
+    } else if (key === 'addDemoBugs') {
+      const added = result.added ?? [];
+      const sprint = result.sprintName ?? 'the active Payments sprint';
+      setNotice(
+        added.length
+          ? `Added ${added.length} critical bug${added.length === 1 ? '' : 's'} to ${sprint} — monitor running…`
+          : `${sprint} already has enough critical bugs to put ${result.deliverableIssueKey ?? 'the contract'} at risk — monitor running…`,
+      );
+    } else {
+      const moved = result.moved ?? [];
+      setNotice(
+        moved.length
+          ? `Moved ${moved.length} demo bug${moved.length === 1 ? '' : 's'} to the Payments backlog — monitor running…`
+          : 'There are no demo bugs to reset — monitor running…',
+      );
+    }
+    // Every demo action queues the monitor; Contracts follows it until a row changes.
+    if (result.ok) onMonitorQueued();
+    setAction(null);
+  };
 
   const seed = async () => {
     setConfirmOpen(false);
     setRunning(true);
     setError(null);
-    const order = Object.keys(SEED_STEP_LABELS);
+    const order = (steps ?? []).map((item) => item.step);
     for (const step of order) {
       setSteps((current) => (current ?? []).map((item) => (item.step === step ? { ...item, status: 'running' } : item)));
       const result = await call<{ success: boolean; steps: SeedStepStatus[] }>('runSeedStep', { step, adoptExisting });
@@ -237,9 +325,10 @@ const DemoTab = ({ onSeeded }: { onSeeded: () => Promise<void> }) => {
   return (
     <Stack space="space.200">
       <Text>
-        Creates two demo teams, Mobile (MOB) and Payments (PAY), with Scrum boards, an active and a next sprint full of
-        issues, charter pages in Confluence, and six sprints of throughput stored as Simulated history. Running it again
-        only adds what is missing. Accord never changes issues outside these two projects.
+        {`Creates two demo teams, ${listKeys((plan?.projects ?? []).map((p) => `${p.name} (${p.projectKey})`)) || 'Mobile and Payments'}, `}
+        with Scrum boards, an active and a next sprint full of issues, charter pages in Confluence, and six sprints of
+        throughput stored as Simulated history. Running it again only adds what is missing. Accord never changes issues
+        outside these two projects; when a preferred key is already used by another project, Accord picks a free one.
       </Text>
       {error ? (
         <SectionMessage appearance="error">
@@ -248,18 +337,46 @@ const DemoTab = ({ onSeeded }: { onSeeded: () => Promise<void> }) => {
       ) : null}
       <Checkbox
         name="adoptExisting"
-        label="Use existing MOB and PAY projects (if a Jira admin created them manually)"
+        label={`Use existing ${listKeys((plan?.projects ?? []).map((p) => p.slot)) || 'demo'} projects (if a Jira admin created them manually)`}
         isChecked={adoptExisting}
         onChange={() => setAdoptExisting((value) => !value)}
       />
       <ButtonGroup label="Demo actions">
-        <Button appearance="primary" isDisabled={running} onClick={() => setConfirmOpen(true)}>
+        <Button appearance="primary" isDisabled={running || action !== null} onClick={() => setConfirmOpen(true)}>
           Seed demo data
         </Button>
-        <Button isDisabled>Add two critical bugs to Payments</Button>
-        <Button isDisabled>Run daily monitor now</Button>
+        <Button isDisabled={running || action !== null} onClick={() => void demoAction('addDemoBugs')}>
+          Add critical bugs to Payments
+        </Button>
+        <Button isDisabled={running || action !== null} onClick={() => void demoAction('runMonitorNow')}>
+          Run daily monitor now
+        </Button>
+        <Button appearance="subtle" isDisabled={running || action !== null} onClick={() => void demoAction('resetDemoBugs')}>
+          Reset demo bugs
+        </Button>
+        {leadState?.canManage ? (
+          <Button isDisabled={running || action !== null} onClick={() => void makeMeLead()}>
+            Make me the demo lead
+          </Button>
+        ) : null}
       </ButtonGroup>
-      <Text>The last two buttons arrive with contract monitoring (milestone M4).</Text>
+      {leadState?.canManage ? (
+        <Text>
+          {`Demo project lead: ${leadState.projects.map((p) => `${p.projectKey} ${p.isLead ? '(you)' : '(someone else)'}`).join(', ')}. "Make me the demo lead" changes only the Accord demo projects.`}
+        </Text>
+      ) : null}
+      <Text>
+        Scenario: Accord adds just enough Highest-priority bugs to the active Payments sprint to push the nearest Payments
+        contract past its agreed date (at most 8), then runs the monitor. The contract turns At risk and both issues get
+        one comment. Reset moves the demo bugs to the backlog (they are not deleted) and runs the monitor again, so the
+        contract recovers.
+      </Text>
+      {action ? <Spinner label="Working" /> : null}
+      {notice ? (
+        <SectionMessage appearance="success">
+          <Text>{notice}</Text>
+        </SectionMessage>
+      ) : null}
       {steps ? (
         <DynamicTable
           caption="Seed steps"
@@ -273,7 +390,7 @@ const DemoTab = ({ onSeeded }: { onSeeded: () => Promise<void> }) => {
           rows={steps.map((item) => ({
             key: item.step,
             cells: [
-              { key: 'step', content: <Text>{SEED_STEP_LABELS[item.step] ?? item.step}</Text> },
+              { key: 'step', content: <Text>{seedStepLabel(item.step, plan)}</Text> },
               {
                 key: 'status',
                 content: <Lozenge appearance={STATUS_LOZENGE[item.status].appearance}>{STATUS_LOZENGE[item.status].text}</Lozenge>,
@@ -293,8 +410,7 @@ const DemoTab = ({ onSeeded }: { onSeeded: () => Promise<void> }) => {
             </ModalHeader>
             <ModalBody>
               <Text>
-                This creates the Jira projects MOB and PAY (if missing), sprints and issues in them, and two charter pages
-                in the Confluence space ACCORD.
+                {`This creates the Jira projects ${listKeys((plan?.projects ?? []).map((p) => p.projectKey))} (if missing), sprints and issues in them, and two charter pages in the Confluence space ${plan?.space.key ?? ''}.`}
               </Text>
             </ModalBody>
             <ModalFooter>
@@ -323,20 +439,45 @@ interface RequestSummary {
   pendingFor: Array<'requester' | 'provider'>;
 }
 
-const InboxTab = () => {
+/** Shared props of the live tabs: whether the tab is shown and when the user last interacted. */
+interface LiveTabProps {
+  active: boolean;
+  lastActivityAt: number;
+}
+
+const InboxTab = ({ onChanged, active, lastActivityAt }: LiveTabProps & { onChanged: () => void }) => {
   const [items, setItems] = useState<RequestSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const shownKey = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     const result = await call<{ items: RequestSummary[] }>('getInbox');
-    if (result.ok) setItems(result.items);
-    else setError(result.error);
+    if (result.ok) {
+      // Same data → no state change, so background refreshes do not flicker.
+      const key = changedKey(shownKey.current, result.items);
+      if (key !== null) {
+        shownKey.current = key;
+        setItems(result.items);
+      }
+      setError(null);
+    } else setError(result.error);
   }, []);
 
-  useEffect(() => {
+  // "Approved, updating Jira" and "Negotiating" settle in the background queue.
+  const moving = items?.some((item) => requestIsMoving(item.status)) ?? false;
+  const { polling, exhausted, restart } = useBoundedPolling(moving, load);
+  // New requests (e.g. created by the Delegate agent) appear without a manual Refresh.
+  useIdlePolling(active && !moving, lastActivityAt, load);
+  const refresh = useCallback(() => {
+    restart();
     void load();
-  }, [load]);
+  }, [restart, load]);
+
+  // Initial load, and again each time the tab is selected (only `active` should retrigger this).
+  useEffect(() => {
+    if (active || items === null) refresh();
+  }, [active]);
 
   if (error) {
     return (
@@ -348,7 +489,14 @@ const InboxTab = () => {
   if (!items) return <Spinner label="Loading inbox" />;
   return (
     <Stack space="space.200">
-      <Text>Requests where you are an approver for one of the teams. Requests waiting for your decision come first.</Text>
+      <Inline space="space.100" alignBlock="center" shouldWrap>
+        <Text>Requests where you are an approver for one of the teams. Requests waiting for your decision come first.</Text>
+        {polling ? <Spinner size="small" label="Updating status" /> : null}
+        {exhausted ? <Text color="color.text.subtle">Still working in the background.</Text> : null}
+        <Button appearance="subtle" onClick={refresh}>
+          Refresh
+        </Button>
+      </Inline>
       <DynamicTable
         caption="Inbox"
         head={{
@@ -384,10 +532,13 @@ const InboxTab = () => {
         {open ? (
           <DealSheetModal
             requestId={open}
-            onChanged={() => void load()}
+            onChanged={() => {
+              refresh();
+              onChanged();
+            }}
             onClose={() => {
               setOpen(null);
-              void load();
+              refresh();
             }}
           />
         ) : null}
@@ -406,24 +557,71 @@ interface ContractRow {
   agreedDateMin: string;
   agreedDateMax: string;
   projectedDate: string | null;
-  status: 'applying' | 'on-track' | 'at-risk';
+  status: 'applying' | 'on-track' | 'at-risk' | 'unknown';
 }
 
-const CONTRACT_STATUS: Record<ContractRow['status'], { text: string; appearance: 'inprogress' | 'success' | 'removed' }> = {
+const CONTRACT_STATUS: Record<ContractRow['status'], { text: string; appearance: 'inprogress' | 'success' | 'removed' | 'default' }> = {
   applying: { text: 'Updating Jira', appearance: 'inprogress' },
   'on-track': { text: 'On track', appearance: 'success' },
   'at-risk': { text: 'At risk', appearance: 'removed' },
+  unknown: { text: 'Not enough data', appearance: 'default' },
 };
 
-const ContractsTab = () => {
+interface DependencySummary {
+  from: string;
+  to: string;
+  contracts: number;
+  atRisk: number;
+}
+
+/**
+ * `watch` increases after a decision or a demo action: the tab then polls until a contract row
+ * changes (status or projected date), besides polling while a row is still being applied/evaluated.
+ */
+const ContractsTab = ({ watch, active, lastActivityAt }: LiveTabProps & { watch: number }) => {
   const [rows, setRows] = useState<ContractRow[] | null>(null);
+  const [dependencies, setDependencies] = useState<DependencySummary[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [baseline, setBaseline] = useState<string | null>(null);
+  const shownKey = useRef<string | null>(null);
+
+  const load = useCallback(async () => {
+    const result = await call<{ contracts: ContractRow[]; dependencies: DependencySummary[] }>('getContracts');
+    if (result.ok) {
+      // Same data → no state change, so background refreshes do not flicker.
+      const key = changedKey(shownKey.current, [result.contracts, result.dependencies]);
+      if (key !== null) {
+        shownKey.current = key;
+        setRows(result.contracts);
+        setDependencies(result.dependencies);
+      }
+      setError(null);
+    } else setError(result.error);
+  }, []);
+
+  const signature = rows ? contractSignature(rows) : null;
+  const signatureRef = useRef(signature);
+  signatureRef.current = signature;
+  const watching = baseline !== null && signature === baseline;
+  const moving = (rows?.some((row) => contractIsMoving(row)) ?? false) || watching;
+  const { polling, exhausted, restart } = useBoundedPolling(moving, load);
 
   useEffect(() => {
-    call<{ contracts: ContractRow[] }>('getContracts').then((result) =>
-      result.ok ? setRows(result.contracts) : setError(result.error),
-    );
-  }, []);
+    if (watch === 0) return;
+    setBaseline(signatureRef.current ?? '');
+    restart();
+  }, [watch, restart]);
+
+  useIdlePolling(active && !moving, lastActivityAt, load);
+  const refresh = useCallback(() => {
+    restart();
+    void load();
+  }, [restart, load]);
+
+  // Initial load, and again each time the tab is selected (only `active` should retrigger this).
+  useEffect(() => {
+    if (active || rows === null) refresh();
+  }, [active]);
 
   if (error) {
     return (
@@ -434,38 +632,157 @@ const ContractsTab = () => {
   }
   if (!rows) return <Spinner label="Loading contracts" />;
   return (
-    <DynamicTable
-      caption="Contracts"
-      head={{
-        cells: [
-          { key: 'contract', content: 'Contract' },
-          { key: 'teams', content: 'Requester → provider' },
-          { key: 'issues', content: 'Issues' },
-          { key: 'agreed', content: 'Agreed dates' },
-          { key: 'status', content: 'Status' },
-        ],
-      }}
-      rows={rows.map((row) => ({
-        key: String(row.contractId),
-        cells: [
-          { key: 'contract', content: <Text>{row.title}</Text> },
-          { key: 'teams', content: <Text>{`${row.requester} → ${row.provider}`}</Text> },
-          { key: 'issues', content: <Text>{`${row.deliverableIssueKey ?? 'pending'} blocks ${row.sourceIssueKey}`}</Text> },
-          { key: 'agreed', content: <Text>{`${row.agreedDateMin} – ${row.agreedDateMax}`}</Text> },
-          {
-            key: 'status',
-            content: <Lozenge appearance={CONTRACT_STATUS[row.status].appearance}>{CONTRACT_STATUS[row.status].text}</Lozenge>,
-          },
-        ],
-      }))}
-      emptyView={<Text>No contracts yet. A contract appears after both team leads approve a deal sheet.</Text>}
-    />
+    <Stack space="space.200">
+      <Inline space="space.100" alignBlock="center">
+        <Text>The daily monitor recalculates each projected date against the provider's open sprint work.</Text>
+        {polling ? <Spinner size="small" label="Updating contracts" /> : null}
+        {exhausted ? <Text color="color.text.subtle">Still working in the background.</Text> : null}
+        <Button onClick={refresh}>Refresh</Button>
+      </Inline>
+      <DynamicTable
+        caption="Contracts"
+        head={{
+          cells: [
+            { key: 'contract', content: 'Contract' },
+            { key: 'teams', content: 'Requester → provider' },
+            { key: 'issues', content: 'Issues' },
+            { key: 'agreed', content: 'Agreed dates' },
+            { key: 'projected', content: 'Projected' },
+            { key: 'status', content: 'Status' },
+          ],
+        }}
+        rows={rows.map((row) => ({
+          key: String(row.contractId),
+          cells: [
+            { key: 'contract', content: <Text>{row.title}</Text> },
+            { key: 'teams', content: <Text>{`${row.requester} → ${row.provider}`}</Text> },
+            { key: 'issues', content: <Text>{`${row.deliverableIssueKey ?? 'pending'} blocks ${row.sourceIssueKey}`}</Text> },
+            { key: 'agreed', content: <Text>{`${row.agreedDateMin} – ${row.agreedDateMax}`}</Text> },
+            {
+              key: 'projected',
+              content: (
+                <Text>
+                  {row.projectedDate ?? (row.status === 'at-risk' ? 'Beyond planning horizon' : row.status === 'unknown' ? 'Not enough capacity data' : 'Not evaluated yet')}
+                </Text>
+              ),
+            },
+            {
+              key: 'status',
+              content: <Lozenge appearance={CONTRACT_STATUS[row.status].appearance}>{CONTRACT_STATUS[row.status].text}</Lozenge>,
+            },
+          ],
+        }))}
+        emptyView={<Text>No contracts yet. A contract appears after both team leads approve a deal sheet.</Text>}
+      />
+      <DynamicTable
+        caption="Dependencies between teams"
+        head={{
+          cells: [
+            { key: 'from', content: 'Depends (requester)' },
+            { key: 'to', content: 'On (provider)' },
+            { key: 'contracts', content: 'Contracts' },
+            { key: 'risk', content: 'At risk' },
+          ],
+        }}
+        rows={dependencies.map((dep) => ({
+          key: `${dep.from}>${dep.to}`,
+          cells: [
+            { key: 'from', content: <Text>{dep.from}</Text> },
+            { key: 'to', content: <Text>{dep.to}</Text> },
+            { key: 'contracts', content: <Text>{String(dep.contracts)}</Text> },
+            {
+              key: 'risk',
+              content: dep.atRisk ? <Lozenge appearance="removed">{`${dep.atRisk} at risk`}</Lozenge> : <Text>0</Text>,
+            },
+          ],
+        }))}
+        emptyView={<Text>No dependencies recorded yet.</Text>}
+      />
+    </Stack>
+  );
+};
+
+interface AuditRow {
+  id: number;
+  at: string;
+  subject: string;
+  action: string;
+  actor: string;
+  summary: string;
+}
+
+const AuditTab = () => {
+  const [rows, setRows] = useState<AuditRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const result = await call<{ entries: AuditRow[] }>('getAudit');
+    if (result.ok) {
+      setRows(result.entries);
+      setError(null);
+    } else setError(result.error);
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (error) {
+    return (
+      <SectionMessage appearance="error">
+        <Text>{error}</Text>
+      </SectionMessage>
+    );
+  }
+  if (!rows) return <Spinner label="Loading audit trail" />;
+  return (
+    <Stack space="space.200">
+      <Inline space="space.100" alignBlock="center">
+        <Text>Recent decisions and background steps for the teams you can access.</Text>
+        <Button onClick={() => void load()}>Refresh</Button>
+      </Inline>
+      <DynamicTable
+        caption="Audit trail"
+        head={{
+          cells: [
+            { key: 'at', content: 'When (UTC)' },
+            { key: 'subject', content: 'Request' },
+            { key: 'action', content: 'Event' },
+            { key: 'actor', content: 'By' },
+            { key: 'summary', content: 'Details' },
+          ],
+        }}
+        rows={rows.map((row) => ({
+          key: String(row.id),
+          cells: [
+            { key: 'at', content: <Text>{row.at.replace('T', ' ').slice(0, 16)}</Text> },
+            { key: 'subject', content: <Text>{row.subject}</Text> },
+            { key: 'action', content: <Text>{row.action}</Text> },
+            { key: 'actor', content: <Text>{row.actor}</Text> },
+            { key: 'summary', content: <Text>{row.summary || '—'}</Text> },
+          ],
+        }))}
+        emptyView={<Text>No audit entries yet.</Text>}
+      />
+    </Stack>
   );
 };
 
 const App = () => {
   const [teams, setTeams] = useState<TeamView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [watch, setWatch] = useState(0);
+  const [tab, setTab] = useState(0);
+  // Tab switches, decisions and demo actions count as interaction and extend the idle refresh window.
+  const [lastActivityAt, setLastActivityAt] = useState(() => Date.now());
+  const watchContracts = useCallback(() => {
+    setWatch((value) => value + 1);
+    setLastActivityAt(Date.now());
+  }, []);
+  const selectTab = useCallback((index: number) => {
+    setTab(index);
+    setLastActivityAt(Date.now());
+  }, []);
 
   const reload = useCallback(async () => {
     const result = await call<{ teams: TeamView[] }>('getTeams');
@@ -489,24 +806,28 @@ const App = () => {
           <Text>{error}</Text>
         </SectionMessage>
       ) : null}
-      <Tabs id="accord-home-tabs">
+      <Tabs id="accord-home-tabs" onChange={selectTab}>
         <TabList>
           <Tab>Inbox</Tab>
           <Tab>Contracts</Tab>
           <Tab>Teams</Tab>
+          <Tab>Audit</Tab>
           <Tab>Demo</Tab>
         </TabList>
         <TabPanel>
-          <InboxTab />
+          <InboxTab onChanged={watchContracts} active={tab === 0} lastActivityAt={lastActivityAt} />
         </TabPanel>
         <TabPanel>
-          <ContractsTab />
+          <ContractsTab watch={watch} active={tab === 1} lastActivityAt={lastActivityAt} />
         </TabPanel>
         <TabPanel>
           <TeamsTab teams={teams} reload={reload} />
         </TabPanel>
         <TabPanel>
-          <DemoTab onSeeded={reload} />
+          <AuditTab />
+        </TabPanel>
+        <TabPanel>
+          <DemoTab onSeeded={reload} onMonitorQueued={watchContracts} />
         </TabPanel>
       </Tabs>
     </Stack>

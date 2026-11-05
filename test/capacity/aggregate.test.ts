@@ -139,7 +139,7 @@ describe('sprint helpers', () => {
 
 describe('demo seed data', () => {
   it('places six simulated sprints back to back before the active sprint', () => {
-    const payments = DEMO_TEAMS.find((team) => team.projectKey === 'PAY');
+    const payments = DEMO_TEAMS.find((team) => team.slot === 'PAY');
     if (!payments) throw new Error('missing PAY');
     const history = simulatedHistory(payments, '2026-11-05');
     const { activeStart } = demoSprintDates('2026-11-05');

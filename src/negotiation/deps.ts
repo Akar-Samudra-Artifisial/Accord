@@ -5,6 +5,7 @@ import { getCharter, getTeamById, type Team } from '../teams/repository';
 import { loadCommitments, teamCapacity } from '../teams/service';
 import { sqlStore } from './store';
 import type { JiraPort, NegotiationDeps, QueuePort, TeamDirectory } from './types';
+import { MONITOR_QUEUE_KEY, type MonitorEvent } from '../monitor/monitor';
 
 export const NEGOTIATION_QUEUE_KEY = 'accord-negotiation';
 
@@ -60,6 +61,12 @@ export const productionDeps: NegotiationDeps = {
   teams: teamDirectory,
   jira: jiraPort,
   queue: queuePort,
+  monitor: {
+    async evaluateProvider(providerTeamId) {
+      const event: MonitorEvent = { type: 'monitor-team', teamId: providerTeamId };
+      await new Queue({ key: MONITOR_QUEUE_KEY }).push([{ body: { ...event } }]);
+    },
+  },
   today: () => new Date().toISOString().slice(0, 10),
   allowSameApprover: process.env.ACCORD_DEMO_ALLOW_SAME_APPROVER === 'true',
 };
