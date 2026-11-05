@@ -4,3 +4,4 @@ export { COST_WEIGHT, SIZE_ISSUES, matchesRule, firstMatchingRule, describeRule 
 export { addDays, daysBetween, isValidIsoDate } from './dates';
 export { explainOption, buildConsequences, renderTemplate } from './explain';
 export { planOptions, buildHorizon, MAX_HORIZON_SPRINTS, MAX_OPTIONS } from './options';
+export { projectContract, type Projection, type ProjectionInput, type ProjectionStatus } from './projection';

@@ -2,7 +2,7 @@ import Resolver from '@forge/resolver';
 import { clientError, UserFacingError } from '../errors';
 import { planOptions } from '../planner';
 import { demoPlannerInput } from '../demo/scenario';
-import { executeSeedStep, getSeedStatus } from '../demo/seed';
+import { executeSeedStep, existingDemoProjectKey, getSeedPlan, getSeedStatus } from '../demo/seed';
 import { SEED_STEPS, type SeedStep } from '../demo/seed-data';
 import { charterBylineState } from '../confluence/charter';
 import { getPage } from '../confluence/pages';
@@ -17,15 +17,22 @@ import {
   teamCapacity,
 } from '../teams/service';
 import {
+  auditTrail,
   contracts,
   createRequestFromIssue,
   dealSheet,
   decideOnDealSheet,
+  dependencySummary,
   inbox,
   panelState,
   retryStalledRequest,
   type ResolverContext,
 } from './negotiation';
+import { teamDirectory } from '../negotiation/deps';
+import { scheduleMonitor } from '../monitor/deps';
+import { addDemoBugs, resetDemoBugs } from '../demo/critical-bugs';
+import { demoBugPort } from '../demo/critical-bugs-port';
+import { assignDemoLead, demoLeadPort, userCanManageDemoProjects } from '../demo/demo-lead';
 
 type Result<T> = ({ ok: true } & T) | { ok: false; error: string };
 
@@ -127,9 +134,87 @@ resolver.define('getInbox', async ({ context }: { context: RequestContext }) => 
 
 resolver.define('getContracts', async ({ context }: { context: RequestContext }) => {
   try {
-    return { ok: true, contracts: await contracts(context.accountId) };
+    const rows = await contracts(context.accountId);
+    return { ok: true, contracts: rows, dependencies: await dependencySummary(rows) };
   } catch (error) {
     return failure('getContracts', error);
+  }
+});
+
+resolver.define('getAudit', async ({ context }: { context: RequestContext }) => {
+  try {
+    return { ok: true, entries: await auditTrail(context.accountId) };
+  } catch (error) {
+    return failure('getAudit', error);
+  }
+});
+
+/** Queues the daily monitor now; allowed for approvers/leads of any registered team. */
+resolver.define('runMonitorNow', async ({ context }: { context: RequestContext }) => {
+  try {
+    const accountId = context.accountId;
+    if (!accountId) throw new UserFacingError('A signed-in Jira user is required.');
+    let allowed = false;
+    for (const team of await listTeams()) {
+      if ((await teamDirectory.approvers(team)).includes(accountId)) {
+        allowed = true;
+        break;
+      }
+    }
+    if (!allowed) throw new UserFacingError('Only team approvers or project leads can run the contract monitor.');
+    const teams = await scheduleMonitor('manual', accountId);
+    return { ok: true, queuedTeams: teams.length };
+  } catch (error) {
+    return failure('runMonitorNow', error);
+  }
+});
+
+resolver.define('addDemoBugs', async ({ context }: { context: RequestContext }) => {
+  try {
+    const projectKey = await existingDemoProjectKey('PAY');
+    await requireProjectAdmin(projectKey, context.accountId);
+    return { ok: true, ...(await addDemoBugs(demoBugPort, projectKey, context.accountId ?? null)) };
+  } catch (error) {
+    return failure('addDemoBugs', error);
+  }
+});
+
+resolver.define('resetDemoBugs', async ({ context }: { context: RequestContext }) => {
+  try {
+    const projectKey = await existingDemoProjectKey('PAY');
+    await requireProjectAdmin(projectKey, context.accountId);
+    return { ok: true, ...(await resetDemoBugs(demoBugPort, projectKey, context.accountId ?? null)) };
+  } catch (error) {
+    return failure('resetDemoBugs', error);
+  }
+});
+
+/** Whether the signed-in user may run "Make me the demo lead" (site admin or admin of the demo projects). */
+resolver.define('getDemoLeadState', async ({ context }: { context: RequestContext }) => {
+  try {
+    if (!context.accountId) return { ok: true, canManage: false, projects: [] };
+    const projects = await demoLeadPort.accordProjects();
+    const canManage = await userCanManageDemoProjects();
+    let allowed = projects.length > 0;
+    for (const project of projects) allowed = allowed && (await canManage(project.projectKey));
+    const leads = await Promise.all(projects.map((project) => demoLeadPort.projectLead(project.projectKey)));
+    return {
+      ok: true,
+      canManage: allowed,
+      projects: projects.map((project, index) => ({ ...project, isLead: leads[index] === context.accountId })),
+    };
+  } catch (error) {
+    return failure('getDemoLeadState', error);
+  }
+});
+
+resolver.define('makeMeDemoLead', async ({ context }: { context: RequestContext }) => {
+  try {
+    if (!context.accountId) throw new UserFacingError('A signed-in Jira user is required.');
+    const results = await assignDemoLead(context.accountId, await userCanManageDemoProjects(), demoLeadPort);
+    return { ok: true, results };
+  } catch (error) {
+    return failure('makeMeDemoLead', error);
   }
 });
 
@@ -192,9 +277,10 @@ resolver.define(
   },
 );
 
-resolver.define('getSeedStatus', async () => {
+resolver.define('getSeedStatus', async ({ payload }: { payload?: { adoptExisting?: unknown } }) => {
   try {
-    return { ok: true, steps: await getSeedStatus() };
+    const [steps, plan] = await Promise.all([getSeedStatus(), getSeedPlan(payload?.adoptExisting === true)]);
+    return { ok: true, steps, plan };
   } catch (error) {
     return failure('getSeedStatus', error);
   }

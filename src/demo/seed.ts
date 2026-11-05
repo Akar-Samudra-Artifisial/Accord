@@ -3,9 +3,10 @@ import { Queue } from '@forge/events';
 import { AtlassianApiError, isNotFound, jira, type Principal } from '../atlassian/http';
 import { createSprint, listSprints, moveIssuesToSprint, updateSprint, type JiraSprint } from '../jira/sprints';
 import { createIssues, listSprintIssues, searchIssues } from '../jira/issues';
+import { UserFacingError } from '../errors';
 import { run, select } from '../sql/db';
-import { getTeamByKey, saveThroughput } from '../teams/repository';
-import { createCharterPage, getProject, registerTeam, TeamSetupError } from '../teams/service';
+import { getTeamByKey, saveThroughput, type Team } from '../teams/repository';
+import { createCharterPage, getProject, registerTeam, resolveCharterSpace, TeamSetupError } from '../teams/service';
 import {
   DEMO_LABEL,
   DEMO_PROJECT_PROPERTY,
@@ -14,9 +15,12 @@ import {
   addDaysIso,
   demoSprintDates,
   demoTeam,
+  pickKey,
+  projectKeyCandidates,
   simulatedHistory,
   type DemoIssue,
   type DemoTeam,
+  type KeyState,
   type SeedStep,
 } from './seed-data';
 
@@ -25,7 +29,7 @@ export const SEED_QUEUE_KEY = 'accord-demo-seed';
 export interface SeedContext {
   /** Lead/approver of the demo projects. */
   leadAccountId: string | null;
-  /** Use MOB/PAY even if they were not created by Accord (user created them manually). */
+  /** Use the projects with the preferred slot keys even if Accord did not create them. */
   adoptExisting: boolean;
   /** Principals tried in order for project creation (`user` only inside resolvers). */
   projectPrincipals: Principal[];
@@ -71,31 +75,86 @@ async function findLeadAccountId(): Promise<string | null> {
   return page.values.find((project) => project.lead?.accountType !== 'app')?.lead?.accountId ?? null;
 }
 
-async function isAccordProject(projectKey: string): Promise<boolean> {
+async function hasAccordProperty(projectKey: string): Promise<boolean> {
   try {
     await jira(route`/rest/api/3/project/${projectKey}/properties/${DEMO_PROJECT_PROPERTY}`);
     return true;
   } catch (error) {
-    if (isNotFound(error)) return false;
+    // 403: a project the app may see but not administer is never Accord's.
+    if (isNotFound(error) || (error instanceof AtlassianApiError && error.status === 403)) return false;
     throw error;
   }
 }
 
-async function ensureProject(team: DemoTeam, context: SeedContext): Promise<string> {
-  let exists = true;
+/**
+ * Accord's own demo project: it carries the `accord.demo` property, or (seeds that predate the
+ * property check) it is registered in this installation's `teams` table under the demo team name.
+ */
+async function probeDemoProject(projectKey: string, team: DemoTeam): Promise<KeyState> {
   try {
-    await getProject(team.projectKey);
+    await getProject(projectKey);
   } catch (error) {
-    if (!isNotFound(error)) throw error;
-    exists = false;
+    if (isNotFound(error)) return 'missing';
+    throw error;
   }
-  if (exists) {
-    if (!(await isAccordProject(team.projectKey)) && !context.adoptExisting) {
-      throw new TeamSetupError(
-        `Project ${team.projectKey} already exists and was not created by Accord. Accord will not change it unless you choose "Use existing projects".`,
-      );
-    }
-  } else {
+  if (await hasAccordProperty(projectKey)) return 'accord';
+  const stored = await getTeamByKey(projectKey);
+  return stored && stored.name === team.name ? 'accord' : 'foreign';
+}
+
+export interface DemoProjectPlan {
+  slot: DemoTeam['slot'];
+  name: string;
+  projectKey: string;
+  /** create = key is free; accord = Accord's project; adopted = existing project used on request. */
+  state: 'create' | 'accord' | 'adopted';
+}
+
+/** Resolves the Jira key a demo team uses (MOB → ACMOB → ACMOB2 … when taken by someone else). */
+export async function resolveDemoProject(team: DemoTeam, adoptExisting: boolean): Promise<DemoProjectPlan> {
+  const base = { slot: team.slot, name: team.name };
+  if (adoptExisting) {
+    const state = await probeDemoProject(team.slot, team);
+    if (state !== 'missing') return { ...base, projectKey: team.slot, state: state === 'accord' ? 'accord' : 'adopted' };
+  }
+  const picked = await pickKey(projectKeyCandidates(team.slot), (key) => probeDemoProject(key, team));
+  return { ...base, projectKey: picked.key, state: picked.state === 'missing' ? 'create' : 'accord' };
+}
+
+export interface SeedPlan {
+  projects: DemoProjectPlan[];
+  space: { key: string; state: 'create' | 'accord' };
+}
+
+export async function getSeedPlan(adoptExisting = false): Promise<SeedPlan> {
+  const projects: DemoProjectPlan[] = [];
+  for (const team of DEMO_TEAMS) projects.push(await resolveDemoProject(team, adoptExisting));
+  const space = await resolveCharterSpace();
+  return { projects, space: { key: space.key, state: space.state === 'missing' ? 'create' : 'accord' } };
+}
+
+/** Jira key of an existing demo project (e.g. Payments → PAY or ACPAY). */
+export async function existingDemoProjectKey(slot: DemoTeam['slot']): Promise<string> {
+  const plan = await resolveDemoProject(demoTeam(slot), false);
+  if (plan.state === 'create') {
+    throw new UserFacingError(`The ${plan.name} demo project does not exist yet. Run "Seed demo data" first.`);
+  }
+  return plan.projectKey;
+}
+
+/** Registered demo team for a slot; throws when the project step has not run yet. */
+async function registeredDemoTeam(team: DemoTeam, context: Pick<SeedContext, 'adoptExisting'>): Promise<Team> {
+  const plan = await resolveDemoProject(team, context.adoptExisting);
+  const stored = plan.state === 'create' ? null : await getTeamByKey(plan.projectKey);
+  if (!stored) throw new TeamSetupError(`Team ${team.name} is not registered yet; run the project step first.`);
+  return stored;
+}
+
+async function ensureProject(team: DemoTeam, context: SeedContext): Promise<string> {
+  const plan = await resolveDemoProject(team, context.adoptExisting);
+  const projectKey = plan.projectKey;
+  const exists = plan.state !== 'create';
+  if (!exists) {
     const leadAccountId = context.leadAccountId ?? (await findLeadAccountId());
     if (!leadAccountId) throw new TeamSetupError('No project lead found for the demo projects.');
     const errors: string[] = [];
@@ -106,7 +165,7 @@ async function ensureProject(team: DemoTeam, context: SeedContext): Promise<stri
           method: 'POST',
           as,
           body: {
-            key: team.projectKey,
+            key: projectKey,
             name: team.name,
             projectTypeKey: 'software',
             projectTemplateKey: 'com.pyxis.greenhopper.jira:gh-simplified-scrum-classic',
@@ -123,16 +182,17 @@ async function ensureProject(team: DemoTeam, context: SeedContext): Promise<stri
     }
     if (!created) {
       throw new TeamSetupError(
-        `Could not create project ${team.projectKey} (${errors.join('; ')}). A Jira admin can create a company-managed Scrum project "${team.name}" with key ${team.projectKey} and re-run the seed with "Use existing projects".`,
+        `Could not create project ${projectKey} (${errors.join('; ')}). A Jira admin can create a company-managed Scrum project "${team.name}" with key ${projectKey} and re-run the seed with "Use existing projects".`,
       );
     }
-    await jira(route`/rest/api/3/project/${team.projectKey}/properties/${DEMO_PROJECT_PROPERTY}`, {
+    await jira(route`/rest/api/3/project/${projectKey}/properties/${DEMO_PROJECT_PROPERTY}`, {
       method: 'PUT',
       body: { createdBy: 'accord', createdAt: new Date().toISOString() },
     });
   }
-  const registered = await registerTeam(team.projectKey);
-  return `${exists ? 'Using' : 'Created'} project ${team.projectKey}, Scrum board ${registered.boardId}`;
+  const registered = await registerTeam(projectKey);
+  const note = projectKey === team.slot ? '' : ` (${team.slot} is used by another project)`;
+  return `${exists ? 'Using' : 'Created'} project ${projectKey}${note}, Scrum board ${registered.boardId}`;
 }
 
 const sprintTime = (date: string, endOfDay = false) => `${date}T${endOfDay ? '17:00' : '09:00'}:00.000Z`;
@@ -163,14 +223,13 @@ async function ensureSprint(
 }
 
 async function ensureSprintsAndIssues(team: DemoTeam, context: SeedContext): Promise<string> {
-  const stored = await getTeamByKey(team.projectKey);
-  if (!stored?.boardId) throw new TeamSetupError(`Team ${team.projectKey} is not registered yet; run the project step first.`);
-  if (!(await isAccordProject(team.projectKey)) && !context.adoptExisting) {
-    throw new TeamSetupError(`Project ${team.projectKey} was not created by Accord; refusing to add issues.`);
-  }
+  // Resolution only returns foreign projects when adoptExisting is set (NFR-2 guard).
+  const stored = await registeredDemoTeam(team, context);
+  if (!stored.boardId) throw new TeamSetupError(`Team ${stored.teamKey} has no Scrum board; run the project step first.`);
+  const projectKey = stored.jiraProjectKey;
   const dates = demoSprintDates(context.today);
   const existing = new Map(
-    (await searchIssues(`project = "${team.projectKey}" AND labels = "${DEMO_LABEL}"`, 200)).map((issue) => [
+    (await searchIssues(`project = "${projectKey}" AND labels = "${DEMO_LABEL}"`, 200)).map((issue) => [
       issue.fields.summary ?? '',
       issue.key,
     ]),
@@ -180,7 +239,7 @@ async function ensureSprintsAndIssues(team: DemoTeam, context: SeedContext): Pro
     if (missing.length) {
       const keys = await createIssues(
         missing.map((item) => ({
-          projectKey: team.projectKey,
+          projectKey,
           summary: item.summary,
           issueType: item.issueType,
           priority: item.priority,
@@ -223,30 +282,29 @@ async function ensureSprintsAndIssues(team: DemoTeam, context: SeedContext): Pro
       endDate: sprintTime(dates.activeEnd, true),
     });
   }
-  return `${team.projectKey}: sprint ${active.id} (${activeKeys.length} issues, active), sprint ${next.id} (${nextKeys.length} issues)`;
+  return `${projectKey}: sprint ${active.id} (${activeKeys.length} issues, active), sprint ${next.id} (${nextKeys.length} issues)`;
 }
 
-async function ensureCharter(team: DemoTeam): Promise<string> {
-  const stored = await getTeamByKey(team.projectKey);
-  if (!stored) throw new TeamSetupError(`Team ${team.projectKey} is not registered yet.`);
+async function ensureCharter(team: DemoTeam, context: SeedContext): Promise<string> {
+  const stored = await registeredDemoTeam(team, context);
   const result = await createCharterPage(stored, {
     teamName: team.name,
     ...team.charter,
-    approverAccountIds: stored.leadAccountId ? [stored.leadAccountId] : [],
+    // The account that triggered the seed approves; otherwise the project lead.
+    approverAccountIds: [context.leadAccountId ?? stored.leadAccountId].filter((id): id is string => Boolean(id)),
   });
   const status = result.charter?.valid ? 'Charter valid' : `missing: ${result.charter?.missingFields.join(', ')}`;
-  return `${team.projectKey}: page ${result.pageId} ${result.created ? 'created' : 'reused'} (${status})`;
+  return `${stored.jiraProjectKey}: page ${result.pageId} ${result.created ? 'created' : 'reused'} (${status})`;
 }
 
 async function ensureHistory(context: SeedContext): Promise<string> {
   const parts: string[] = [];
   for (const team of DEMO_TEAMS) {
-    const stored = await getTeamByKey(team.projectKey);
-    if (!stored) throw new TeamSetupError(`Team ${team.projectKey} is not registered yet.`);
-    const samples = simulatedHistory(team, context.today);
+    const stored = await registeredDemoTeam(team, context);
+    const samples = simulatedHistory(team, context.today, stored.jiraProjectKey);
     await run("DELETE FROM throughput_samples WHERE team_id = ? AND source = 'simulated'", [stored.id]);
     await saveThroughput(stored.id, samples);
-    parts.push(`${team.projectKey}: ${samples.length} simulated sprints`);
+    parts.push(`${stored.jiraProjectKey}: ${samples.length} simulated sprints`);
   }
   return parts.join('; ');
 }
@@ -259,7 +317,7 @@ export async function runSeedStep(step: SeedStep, context: SeedContext): Promise
     case 'sprints':
       return ensureSprintsAndIssues(demoTeam(key), context);
     case 'charter':
-      return ensureCharter(demoTeam(key));
+      return ensureCharter(demoTeam(key), context);
     case 'history':
       return ensureHistory(context);
     default:
@@ -318,10 +376,11 @@ export async function startSeed(options: {
       projectPrincipals: options.inlineProjectPrincipals,
       today,
     };
-    for (const step of ['project:MOB', 'project:PAY'] as const) {
+    const projectSteps = SEED_STEPS.filter((step) => step.startsWith('project:'));
+    for (const step of projectSteps) {
       if (!(await executeSeedStep(step, context))) return { jobId: null, failedStep: step };
     }
-    first = 'sprints:MOB';
+    first = SEED_STEPS[projectSteps.length];
   }
   const jobId = await enqueueSeedStep({
     step: first,

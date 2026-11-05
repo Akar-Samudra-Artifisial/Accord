@@ -194,7 +194,7 @@ export async function runRound2(deps: NegotiationDeps, requestId: string): Promi
         requestId,
         `comment:deal-sheet:${request.sourceIssueKey}`,
         request.sourceIssueKey,
-        `Accord: the deal sheet for "${request.title}" (${provider.name}) is ready with ${ranked.length} options. ` +
+        `Accord: the deal sheet for ${quotedTitle(request.title)} (${provider.name}) is ready with ${ranked.length} options. ` +
           `Recommended delivery ${recommended.dateRange.min || 'none'} to ${recommended.dateRange.max || 'none'}. ` +
           'Nothing changes in Jira until both team leads approve the same option in the Accord panel.',
       );
@@ -205,7 +205,7 @@ export async function runRound2(deps: NegotiationDeps, requestId: string): Promi
           requestId,
           `comment:deal-sheet:${key}`,
           key,
-          `Accord: the recommended option for ${requester.name}'s request "${request.title}" (${request.sourceIssueKey}) ` +
+          `Accord: the recommended option for ${requester.name}'s request ${quotedTitle(request.title)} (${request.sourceIssueKey}) ` +
             `would move this issue to a later sprint. It only moves if the ${provider.name} and ${requester.name} leads both approve.`,
         );
       }
@@ -426,7 +426,7 @@ export async function applyContract(deps: NegotiationDeps, requestId: string): P
     requestId,
     `comment:contract:${request.sourceIssueKey}`,
     request.sourceIssueKey,
-    `Accord contract: ${provider.name} delivers "${request.title}" as ${deliverable}, agreed ${agreed}. ` +
+    `Accord contract: ${provider.name} delivers ${quotedTitle(request.title)} as ${deliverable}, agreed ${agreed}. ` +
       `Approved by the ${requester.name} and ${provider.name} leads.`,
   );
   await commentOnce(
@@ -448,6 +448,13 @@ export async function applyContract(deps: NegotiationDeps, requestId: string): P
       agreed: dates,
       ...actor,
     });
+  }
+  // Fill the projected date right away instead of waiting for the daily run (evaluation is idempotent).
+  try {
+    await deps.monitor.evaluateProvider(request.providerTeamId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await deps.store.audit('contract', String(contract.id), 'monitor-enqueue-failed', null, { error: message.slice(0, 500) });
   }
   return { status: 'done', detail: `contract ${contract.id}, deliverable ${deliverable}` };
 }
@@ -507,8 +514,29 @@ export interface NewRequestInput {
 const SIZES: readonly Size[] = ['S', 'M', 'L'];
 export const COST_CLASSES: readonly CostClass[] = ['fixed-date', 'standard', 'intangible'];
 
+export const MAX_TITLE_LENGTH = 120;
+/** New requests one provider team accepts per hour (spam guard, all requesters together). */
+export const MAX_REQUESTS_PER_PROVIDER_PER_HOUR = 20;
+
+/**
+ * Request titles end up in Jira comments and agent context: one line, no control or
+ * format characters, double quotes replaced so a title cannot close the quoted text.
+ */
+export function normalizeTitle(value: string): string {
+  return value
+    .replace(/[\p{Cc}\p{Cf}\u2028\u2029]+/gu, ' ')
+    .replace(/"/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_TITLE_LENGTH)
+    .trim();
+}
+
+/** Title as quoted text in comments (stored titles from before normalization are cleaned too). */
+export const quotedTitle = (title: string): string => `"${normalizeTitle(title)}"`;
+
 export function validateNewRequest(input: Omit<NewRequestInput, 'requesterTeam' | 'providerTeam'>, today: string): string | null {
-  if (!input.title.trim() || input.title.length > 255) return 'Title is required (at most 255 characters).';
+  if (!normalizeTitle(input.title)) return `Title is required (one line; longer titles are cut to ${MAX_TITLE_LENGTH} characters).`;
   if (!SIZES.includes(input.size)) return 'Size must be S, M or L.';
   if (!COST_CLASSES.includes(input.costClass)) return 'Cost class must be fixed-date, standard or intangible.';
   if (!isValidIsoDate(input.neededBy)) return 'Needed by must be a date in YYYY-MM-DD format.';
@@ -533,7 +561,7 @@ export async function createRequest(deps: NegotiationDeps, input: NewRequestInpu
     requesterTeamId: input.requesterTeam.id,
     providerTeamId: input.providerTeam.id,
     sourceIssueKey: input.sourceIssueKey,
-    title: input.title.trim(),
+    title: normalizeTitle(input.title),
     size: input.size,
     minSize: input.minSize,
     neededBy: input.neededBy,
@@ -542,7 +570,17 @@ export async function createRequest(deps: NegotiationDeps, input: NewRequestInpu
     createdBy: input.createdBy,
     createdAt: new Date().toISOString(),
   };
-  await deps.store.insertRequest(request);
+  const inserted = await deps.store.insertRequest(request, { maxPerProviderPerHour: MAX_REQUESTS_PER_PROVIDER_PER_HOUR });
+  if (inserted === 'duplicate') {
+    throw new NegotiationError(
+      `${request.sourceIssueKey} already has an open request to ${input.providerTeam.name}. Open its deal sheet instead of creating another one.`,
+    );
+  }
+  if (inserted === 'provider-limit') {
+    throw new NegotiationError(
+      `${input.providerTeam.name} received ${MAX_REQUESTS_PER_PROVIDER_PER_HOUR} requests in the last hour. Try again later.`,
+    );
+  }
   await deps.store.audit('request', id, 'created', input.createdBy, {
     sourceIssueKey: request.sourceIssueKey,
     provider: input.providerTeam.teamKey,

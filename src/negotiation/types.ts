@@ -73,7 +73,13 @@ export interface Approval {
   createdAt: string;
 }
 
-export type ContractStatus = 'applying' | 'on-track' | 'at-risk';
+/** `unknown`: the provider has no usable capacity data, so the monitor cannot project a date. */
+export type ContractStatus = 'applying' | 'on-track' | 'at-risk' | 'unknown';
+
+/** Requests that block a duplicate for the same source issue and provider. */
+export const OPEN_REQUEST_STATUSES: readonly RequestStatus[] = ['negotiating', 'awaiting-approval'];
+
+export type InsertRequestResult = 'inserted' | 'duplicate' | 'provider-limit';
 
 export interface Contract {
   id: number;
@@ -102,7 +108,11 @@ export interface PlanningContext {
 /** Persistence used by the negotiation flow (Forge SQL in production, in-memory in tests). */
 export interface NegotiationStore {
   getRequest(id: string): Promise<DependencyRequest | null>;
-  insertRequest(request: DependencyRequest): Promise<void>;
+  /**
+   * Inserts the request unless an open request (`OPEN_REQUEST_STATUSES`) exists for the same source issue and
+   * provider, or the provider received `maxPerProviderPerHour` requests in the last hour (checked in one statement).
+   */
+  insertRequest(request: DependencyRequest, limits: { maxPerProviderPerHour: number }): Promise<InsertRequestResult>;
   /** Conditional transition; returns false when the current status is not in `from`. */
   transition(id: string, from: readonly RequestStatus[], to: RequestStatus): Promise<boolean>;
   getRound(requestId: string, roundNo: 1 | 2, role: RoundRole): Promise<RoundRecord | null>;
@@ -162,6 +172,8 @@ export interface NegotiationDeps {
   teams: TeamDirectory;
   jira: JiraPort;
   queue: QueuePort;
+  /** Queues a contract monitor run for one provider team (after a contract is applied). */
+  monitor: { evaluateProvider(providerTeamId: string): Promise<void> };
   today: () => IsoDate;
   /**
    * Dual control: one account may not approve for both teams unless this demo

@@ -10,6 +10,7 @@ import ForgeReconciler, {
   HelperMessage,
   Inline,
   Label,
+  Lozenge,
   ModalTransition,
   RequiredAsterisk,
   SectionMessage,
@@ -21,6 +22,8 @@ import ForgeReconciler, {
   useForm,
 } from '@forge/react';
 import { call, DealSheetModal, StatusLozenge, type RequestStatus } from './dealsheet';
+import { defaultNeededBy } from './dates';
+import { contractIsMoving, requestIsMoving, useBoundedPolling } from './polling';
 
 interface RequestSummary {
   id: string;
@@ -31,6 +34,7 @@ interface RequestSummary {
   requester: string;
   provider: string;
   pendingFor: Array<'requester' | 'provider'>;
+  contract: { status: 'applying' | 'on-track' | 'at-risk' | 'unknown'; projectedDate: string | null; agreedDateMax: string } | null;
 }
 
 interface PanelState {
@@ -66,10 +70,6 @@ const COST_CHOICES: Choice[] = [
   { label: 'Intangible (not linked to an active goal)', value: 'intangible' },
 ];
 
-/** Statuses that still change without user action (background queue). */
-const MOVING: ReadonlySet<RequestStatus> = new Set(['negotiating', 'approved']);
-const POLL_MS = 4000;
-const MAX_POLLS = 30;
 
 /**
  * Uncontrolled form (UI Kit `useForm`): typing does not round-trip through React state,
@@ -91,7 +91,8 @@ const RequestForm = ({
       title: '',
       size: SIZE_CHOICES[1],
       minSize: '',
-      // No neededBy default: an empty string makes the DatePicker show a bogus date.
+      // A valid ISO default; without one the DatePicker shows a bogus date (2/18/1993).
+      neededBy: defaultNeededBy(),
       costClass: COST_CHOICES[0],
     },
   });
@@ -181,7 +182,6 @@ const App = () => {
   const [error, setError] = useState<string | null>(null);
   const [openRequest, setOpenRequest] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [polls, setPolls] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
@@ -192,28 +192,22 @@ const App = () => {
     } else setError(result.error);
   }, []);
 
-  /** Manual or event-driven refresh; restarts the bounded polling budget. */
-  const refresh = useCallback(async () => {
-    setRefreshing(true);
-    setPolls(0);
-    await load();
-    setRefreshing(false);
-  }, [load]);
-
   useEffect(() => {
     void load();
   }, [load]);
 
-  // Badges follow the background negotiation without a page reload (bounded).
-  const moving = state?.requests.some((request) => MOVING.has(request.status)) ?? false;
-  useEffect(() => {
-    if (!moving || polls >= MAX_POLLS) return undefined;
-    const timer = setTimeout(() => {
-      setPolls((value) => value + 1);
-      void load();
-    }, POLL_MS);
-    return () => clearTimeout(timer);
-  }, [moving, polls, load]);
+  // Badges follow negotiation, apply-contract and the first monitor run without a reload (bounded).
+  const moving =
+    state?.requests.some((request) => requestIsMoving(request.status) || contractIsMoving(request.contract)) ?? false;
+  const { polling, exhausted, restart } = useBoundedPolling(moving, load);
+
+  /** Manual or event-driven refresh; restarts the bounded polling budget. */
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    restart();
+    await load();
+    setRefreshing(false);
+  }, [load, restart]);
 
   if (error) {
     return (
@@ -235,9 +229,19 @@ const App = () => {
         <Stack key={request.id} space="space.050">
           <Inline space="space.100" alignBlock="center" shouldWrap>
             <StatusLozenge status={request.status} />
+            {request.contract?.status === 'at-risk' ? <Lozenge appearance="removed">At risk</Lozenge> : null}
+            {request.contract?.status === 'on-track' ? <Lozenge appearance="success">On track</Lozenge> : null}
+            {request.contract?.status === 'unknown' ? <Lozenge appearance="default">Not enough data</Lozenge> : null}
             <Text weight="medium">{request.title}</Text>
           </Inline>
           <Text color="color.text.subtle">{`${request.requester} → ${request.provider} · needed by ${request.neededBy}`}</Text>
+          {request.contract && request.contract.status !== 'applying' ? (
+            <Text color={request.contract.status === 'at-risk' ? 'color.text.danger' : 'color.text.subtle'}>
+              {request.contract.status === 'unknown'
+                ? `Projected delivery unknown: not enough capacity data · agreed by ${request.contract.agreedDateMax}`
+                : `Projected delivery ${request.contract.projectedDate ?? 'not checked yet'} · agreed by ${request.contract.agreedDateMax}`}
+            </Text>
+          ) : null}
           {request.pendingFor.length ? <Text weight="bold">Your decision is needed.</Text> : null}
           <Inline>
             <Button onClick={() => setOpenRequest(request.id)}>Open deal sheet</Button>
@@ -246,8 +250,8 @@ const App = () => {
       ))}
       {state.requests.length ? (
         <Inline space="space.100" alignBlock="center" shouldWrap>
-          {moving && polls < MAX_POLLS ? <Spinner size="small" label="Updating status" /> : null}
-          {moving && polls >= MAX_POLLS ? <Text color="color.text.subtle">Still working in the background.</Text> : null}
+          {polling ? <Spinner size="small" label="Updating status" /> : null}
+          {exhausted ? <Text color="color.text.subtle">Still working in the background.</Text> : null}
           <Button appearance="subtle" isDisabled={refreshing} onClick={() => void refresh()}>
             Refresh
           </Button>

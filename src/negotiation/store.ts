@@ -12,6 +12,7 @@ import type {
   RoundRole,
   StoredOption,
 } from './types';
+import { OPEN_REQUEST_STATUSES } from './types';
 
 interface RequestRow {
   id: string;
@@ -150,10 +151,15 @@ export const sqlStore: NegotiationStore = {
     const rows = await select<RequestRow>('SELECT * FROM requests WHERE id = ?', [id]);
     return rows[0] ? toRequest(rows[0]) : null;
   },
-  async insertRequest(request) {
-    await run(
+  async insertRequest(request, limits) {
+    // One statement: the duplicate and provider-rate checks hold at insert time (no read-then-write gap).
+    const active = OPEN_REQUEST_STATUSES;
+    const result = await run(
       `INSERT INTO requests (id, requester_team_id, provider_team_id, source_issue_key, title, size, min_size, needed_by,
-         cost_class, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         cost_class, status, created_by)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM DUAL
+       WHERE NOT EXISTS (SELECT 1 FROM requests WHERE source_issue_key = ? AND provider_team_id = ? AND status IN (${marks(active)}))
+         AND (SELECT COUNT(*) FROM requests WHERE provider_team_id = ? AND created_at > CURRENT_TIMESTAMP - INTERVAL 1 HOUR) < ?`,
       [
         request.id,
         request.requesterTeamId,
@@ -166,8 +172,19 @@ export const sqlStore: NegotiationStore = {
         request.costClass,
         request.status,
         request.createdBy,
+        request.sourceIssueKey,
+        request.providerTeamId,
+        ...active,
+        request.providerTeamId,
+        limits.maxPerProviderPerHour,
       ],
     );
+    if (result.affectedRows > 0) return 'inserted';
+    const duplicate = await select<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM requests WHERE source_issue_key = ? AND provider_team_id = ? AND status IN (${marks(active)})`,
+      [request.sourceIssueKey, request.providerTeamId, ...active],
+    );
+    return Number(duplicate[0]?.n ?? 0) > 0 ? 'duplicate' : 'provider-limit';
   },
   async transition(id, from, to) {
     const placeholders = from.map(() => '?').join(', ');
@@ -359,22 +376,111 @@ export async function recentRequestCount(accountId: string): Promise<number> {
   return Number(rows[0]?.n ?? 0);
 }
 
+export interface DependencyEdge {
+  contractId: number;
+  fromTeamId: string;
+  toTeamId: string;
+}
+
+/** Agreed dependency edges (requester → provider), newest first (FR-13). */
+export async function listEdges(limit = 200): Promise<DependencyEdge[]> {
+  const rows = await select<{ contract_id: number; from_team_id: string; to_team_id: string }>(
+    `SELECT contract_id, from_team_id, to_team_id FROM dependency_edges ORDER BY id DESC LIMIT ${Math.floor(limit)}`,
+  );
+  return rows.map((row) => ({ contractId: Number(row.contract_id), fromTeamId: row.from_team_id, toTeamId: row.to_team_id }));
+}
+
+export interface AuditEntry {
+  id: number;
+  entityType: string;
+  entityId: string;
+  action: string;
+  actorAccountId: string | null;
+  payload: unknown;
+  createdAt: string;
+}
+
+/** Latest audit entries of the given requests and contracts (viewer filter in SQL, before the limit). */
+export async function auditFor(requestIds: readonly string[], contractIds: readonly number[], limit = 50): Promise<AuditEntry[]> {
+  const clauses: string[] = [];
+  const params: Array<string | number> = [];
+  if (requestIds.length) {
+    clauses.push(`(entity_type = 'request' AND entity_id IN (${marks(requestIds)}))`);
+    params.push(...requestIds);
+  }
+  if (contractIds.length) {
+    clauses.push(`(entity_type = 'contract' AND entity_id IN (${marks(contractIds)}))`);
+    params.push(...contractIds.map(String));
+  }
+  if (clauses.length === 0) return [];
+  const rows = await select<{
+    id: number;
+    entity_type: string;
+    entity_id: string;
+    action: string;
+    actor_account_id: string | null;
+    payload: unknown;
+    created_at: string;
+  }>(`SELECT * FROM audit_log WHERE ${clauses.join(' OR ')} ORDER BY created_at DESC, id DESC LIMIT ${Math.floor(limit)}`, params);
+  return rows.map((row) => ({
+    id: Number(row.id),
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+    action: row.action,
+    actorAccountId: row.actor_account_id,
+    payload: parseJson<unknown>(row.payload, null),
+    createdAt: String(row.created_at),
+  }));
+}
+
 export interface ContractListRow {
   contract: Contract;
   request: DependencyRequest;
 }
 
-export async function listContracts(teamId?: string): Promise<ContractListRow[]> {
-  const rows = await select<ContractRow & { r_id: string } & Record<string, unknown>>(
-    `SELECT c.*, r.id AS r_id, r.requester_team_id, r.provider_team_id, r.source_issue_key, r.title, r.size,
+const CONTRACT_JOIN = `SELECT c.*, r.id AS r_id, r.requester_team_id, r.provider_team_id, r.source_issue_key, r.title, r.size,
        r.size_corrected, r.min_size, r.needed_by, r.cost_class, r.status AS r_status, r.created_by, r.created_at
-     FROM contracts c JOIN requests r ON r.id = c.request_id
+     FROM contracts c JOIN requests r ON r.id = c.request_id`;
+
+type ContractJoinRow = ContractRow & { r_id: string } & Record<string, unknown>;
+
+const toContractListRow = (row: ContractJoinRow): ContractListRow => ({
+  contract: toContract(row),
+  request: toRequest({ ...(row as unknown as RequestRow), id: row.r_id, status: String(row.r_status) }),
+});
+
+/** Newest contracts for the Contracts tab / list-contracts action (display list, capped). */
+export async function listContracts(teamId?: string): Promise<ContractListRow[]> {
+  const rows = await select<ContractJoinRow>(
+    `${CONTRACT_JOIN}
      ${teamId ? 'WHERE r.requester_team_id = ? OR r.provider_team_id = ?' : ''}
      ORDER BY c.id DESC LIMIT 100`,
     teamId ? [teamId, teamId] : [],
   );
-  return rows.map((row) => ({
-    contract: toContract(row),
-    request: toRequest({ ...(row as unknown as RequestRow), id: row.r_id, status: String(row.r_status) }),
-  }));
+  return rows.map(toContractListRow);
+}
+
+/** Every contract of `providerTeamId` in one of `statuses` (no limit: the monitor must see all work ahead). */
+export async function contractsForProvider(providerTeamId: string, statuses: readonly string[]): Promise<ContractListRow[]> {
+  if (statuses.length === 0) return [];
+  const rows = await select<ContractJoinRow>(
+    `${CONTRACT_JOIN} WHERE r.provider_team_id = ? AND c.status IN (${marks(statuses)}) ORDER BY c.agreed_date_max, c.id`,
+    [providerTeamId, ...statuses],
+  );
+  return rows.map(toContractListRow);
+}
+
+/** Contracts of the given requests (no limit; the caller bounds the request list). */
+export async function contractsForRequests(requestIds: readonly string[]): Promise<ContractListRow[]> {
+  if (requestIds.length === 0) return [];
+  const rows = await select<ContractJoinRow>(`${CONTRACT_JOIN} WHERE c.request_id IN (${marks(requestIds)})`, [...requestIds]);
+  return rows.map(toContractListRow);
+}
+
+/** Stored options by id (audit summaries). */
+export async function optionsByIds(ids: readonly number[]): Promise<Map<number, StoredOption>> {
+  const unique = [...new Set(ids)].filter((id) => Number.isInteger(id) && id > 0);
+  if (unique.length === 0) return new Map();
+  const rows = await select<OptionRow>(`SELECT * FROM options WHERE id IN (${marks(unique)})`, unique);
+  return new Map(rows.map((row) => [Number(row.id), toOption(row)]));
 }

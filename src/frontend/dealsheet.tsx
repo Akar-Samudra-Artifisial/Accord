@@ -23,6 +23,7 @@ import {
   xcss,
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
+import { requestIsMoving, useBoundedPolling } from './polling';
 
 /** Shared deal sheet modal (issue panel and global page Inbox). */
 
@@ -116,8 +117,6 @@ const featuredCardStyle = xcss({
   width: '100%',
 });
 
-const POLL_MS = 3000;
-const MAX_POLLS = 40;
 const ISSUE_KEY_IN_TEXT = /\b[A-Z][A-Z0-9_]+-\d+\b/g;
 
 const dateRange = (range: { min: string; max: string }) =>
@@ -327,7 +326,6 @@ export const DealSheetModal = ({
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reason, setReason] = useState('');
-  const [polls, setPolls] = useState(0);
   const [showOthers, setShowOthers] = useState(true);
   const [showTranscript, setShowTranscript] = useState(false);
   const lastStatus = useRef<RequestStatus | null>(null);
@@ -355,15 +353,8 @@ export const DealSheetModal = ({
   }, [load]);
 
   // Rounds and apply-contract run in the background queue; poll until a final status.
-  const pending = sheet?.request.status === 'negotiating' || sheet?.request.status === 'approved';
-  useEffect(() => {
-    if (!pending || polls >= MAX_POLLS) return undefined;
-    const timer = setTimeout(() => {
-      setPolls((value) => value + 1);
-      void load();
-    }, POLL_MS);
-    return () => clearTimeout(timer);
-  }, [pending, polls, load]);
+  const pending = sheet ? requestIsMoving(sheet.request.status) || sheet.contract?.status === 'applying' : false;
+  const { exhausted, restart: restartPolling } = useBoundedPolling(pending, load);
 
   const decide = async (option: OptionView, side: Side, decision: 'approve' | 'reject') => {
     setBusy(true);
@@ -378,7 +369,8 @@ export const DealSheetModal = ({
     });
     if (result.ok) {
       setMessage(decisionMessage(result.result, option, decision));
-      setPolls(0);
+      restartPolling();
+      onChangedRef.current?.();
     } else setError(result.error);
     await load();
     setBusy(false);
@@ -390,7 +382,7 @@ export const DealSheetModal = ({
     const result = await call<{ result: DecisionResult }>('retryRequest', { requestId });
     if (result.ok) {
       setMessage('Negotiation restarted. The delegates are working on it again.');
-      setPolls(0);
+      restartPolling();
     } else setError(result.error);
     await load();
     setBusy(false);
@@ -470,14 +462,14 @@ export const DealSheetModal = ({
                   </SectionMessage>
                 ))
             )}
-            {pending && polls >= MAX_POLLS ? (
+            {exhausted ? (
               <SectionMessage appearance="information">
                 <Inline space="space.100" alignBlock="center" shouldWrap>
                   <Text>Still working — this is taking longer than usual.</Text>
                   <Button
                     appearance="subtle"
                     onClick={() => {
-                      setPolls(0);
+                      restartPolling();
                       void load();
                     }}
                   >

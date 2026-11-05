@@ -1,5 +1,6 @@
 import { route } from '@forge/api';
-import { jira, type Principal } from '../atlassian/http';
+import { isNotFound, jira, type Principal } from '../atlassian/http';
+import { keyCandidates, pickKey, type KeyState } from '../demo/seed-data';
 import { UserFacingError } from '../errors';
 import { myPermissions } from '../jira/permissions';
 import { findScrumBoard } from '../jira/boards';
@@ -35,6 +36,7 @@ import {
 import { CAPACITY_WINDOW, isValidIsoDate, type Sprint, type WorkItem } from '../planner';
 import {
   getCharter,
+  listTeams,
   listThroughput,
   saveCharter,
   saveThroughput,
@@ -112,16 +114,53 @@ export async function syncCharter(team: Team): Promise<StoredCharter | null> {
 }
 
 /** Uses the Accord space, creating it when missing; falls back to the first global space. */
+/**
+ * A space is Accord's when it carries the Accord space name or already holds the charter page of
+ * a registered team (spaces created before the name check). Space properties would need extra scopes.
+ */
+async function probeCharterSpace(key: string, spaces: Map<string, Space>, charterPageIds: () => Promise<string[]>): Promise<KeyState> {
+  const space = await getSpaceByKey(key);
+  if (!space) return 'missing';
+  spaces.set(key, space);
+  if (space.name === CHARTER_SPACE_NAME) return 'accord';
+  for (const pageId of await charterPageIds()) {
+    try {
+      if ((await getPage(pageId)).spaceId === space.id) return 'accord';
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+    }
+  }
+  return 'foreign';
+}
+
+export interface CharterSpacePlan {
+  key: string;
+  state: 'missing' | 'accord';
+  space: Space | null;
+}
+
+/** ACCORD, then ACCORD2 … when the key is taken by a space Accord did not create. */
+export async function resolveCharterSpace(): Promise<CharterSpacePlan> {
+  const spaces = new Map<string, Space>();
+  let pageIds: string[] | null = null;
+  const charterPageIds = async () =>
+    (pageIds ??= (await listTeams()).map((team) => team.charterPageId).filter((id): id is string => Boolean(id)));
+  const { key, state } = await pickKey(keyCandidates(CHARTER_SPACE_KEY, CHARTER_SPACE_KEY), (candidate) =>
+    probeCharterSpace(candidate, spaces, charterPageIds),
+  );
+  return { key, state, space: spaces.get(key) ?? null };
+}
+
 export async function ensureCharterSpace(as: Principal = 'app'): Promise<Space> {
-  const existing = await getSpaceByKey(CHARTER_SPACE_KEY);
-  if (existing) return existing;
+  const plan = await resolveCharterSpace();
+  if (plan.space) return plan.space;
   try {
-    return await createSpace(CHARTER_SPACE_KEY, CHARTER_SPACE_NAME, as);
+    return await createSpace(plan.key, CHARTER_SPACE_NAME, as);
   } catch (error) {
     const fallback = (await listSpaces()).find((space) => space.type === 'global' && space.status !== 'archived');
     if (fallback) return fallback;
-    console.error(`Creating Confluence space ${CHARTER_SPACE_KEY} failed`, error instanceof Error ? error.message : error);
-    throw new TeamSetupError(`Could not create the Confluence space ${CHARTER_SPACE_KEY} and no global space exists.`);
+    console.error(`Creating Confluence space ${plan.key} failed`, error instanceof Error ? error.message : error);
+    throw new TeamSetupError(`Could not create the Confluence space ${plan.key} and no global space exists.`);
   }
 }
 

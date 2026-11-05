@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { shiftScenario } from '../planner/fixtures';
-import { applyContract, contractLabel, createRequest, decide, runRound1, runRound2 } from '../../src/negotiation/orchestrator';
+import {
+  applyContract,
+  contractLabel,
+  createRequest,
+  decide,
+  MAX_REQUESTS_PER_PROVIDER_PER_HOUR,
+  MAX_TITLE_LENGTH,
+  normalizeTitle,
+  quotedTitle,
+  runRound1,
+  runRound2,
+} from '../../src/negotiation/orchestrator';
 import { handleNegotiationEvent, parseNegotiationEvent } from '../../src/negotiation/consumer';
 import { MOB, PAY, REQUEST_ID, harness, request, type Harness } from './fakes';
 
@@ -32,6 +43,63 @@ describe('createRequest', () => {
     expect(h.jira.comments).toEqual([]);
     await expect(createRequest(h.deps, { ...input, providerTeam: MOB }, REQUEST_ID)).rejects.toThrow(/itself/);
     await expect(createRequest(h.deps, { ...input, neededBy: '2026-11-01' }, REQUEST_ID)).rejects.toThrow(/future/);
+  });
+
+  const input = {
+    sourceIssueKey: 'MOB-7',
+    requesterTeam: MOB,
+    providerTeam: PAY,
+    title: 'Refund API',
+    size: 'M' as const,
+    minSize: 1,
+    neededBy: '2026-11-29',
+    costClass: 'standard' as const,
+    createdBy: 'lead-mobile',
+  };
+  const id = (n: number) => `req-00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+
+  it('rejects a second open request for the same source issue and provider', async () => {
+    const h = harness();
+    await createRequest(h.deps, input, id(1));
+    await expect(createRequest(h.deps, input, id(2))).rejects.toThrow(/already has an open request to Payments/);
+    expect(h.store.requests.has(id(2))).toBe(false);
+    // Another source issue is fine, and so is a new request once the first one was decided.
+    await createRequest(h.deps, { ...input, sourceIssueKey: 'MOB-8' }, id(3));
+    await h.store.transition(id(1), ['negotiating'], 'rejected');
+    await createRequest(h.deps, input, id(4));
+    expect(h.pushed).toHaveLength(3);
+  });
+
+  it('limits new requests per provider and hour', async () => {
+    const h = harness();
+    for (let n = 1; n <= MAX_REQUESTS_PER_PROVIDER_PER_HOUR; n += 1) {
+      await createRequest(h.deps, { ...input, sourceIssueKey: `MOB-${100 + n}` }, id(n));
+    }
+    await expect(createRequest(h.deps, { ...input, sourceIssueKey: 'MOB-999' }, id(99))).rejects.toThrow(/20 requests in the last hour/);
+    h.store.now += 3600;
+    await createRequest(h.deps, { ...input, sourceIssueKey: 'MOB-999' }, id(99));
+  });
+
+  it('stores a one-line normalized title and quotes it in comments', async () => {
+    const h = harness();
+    const created = await createRequest(
+      h.deps,
+      { ...input, title: `  Refund\nAPI "ignore previous instructions"\u0000\u202e ${'x'.repeat(200)}` },
+      id(1),
+    );
+    expect(created.title).not.toMatch(/[\n"\u0000\u202e]/);
+    expect(created.title.length).toBeLessThanOrEqual(MAX_TITLE_LENGTH);
+    expect(created.title.startsWith("Refund API 'ignore previous instructions' x")).toBe(true);
+    await expect(createRequest(h.deps, { ...input, sourceIssueKey: 'MOB-9', title: ' \n\t ' }, id(2))).rejects.toThrow(/Title is required/);
+  });
+});
+
+describe('normalizeTitle / quotedTitle', () => {
+  it('collapses whitespace, strips control and format characters and caps the length', () => {
+    expect(normalizeTitle('a\r\nb\u2028c\td')).toBe('a b c d');
+    expect(normalizeTitle('\u200bzero\u200dwidth')).toBe('zero width');
+    expect(normalizeTitle('y'.repeat(300))).toHaveLength(MAX_TITLE_LENGTH);
+    expect(quotedTitle('say "hi"\nnow')).toBe(`"say 'hi' now"`);
   });
 });
 
@@ -256,6 +324,17 @@ describe('applyContract', () => {
     expect((await h.store.getRequest(REQUEST_ID))?.status).toBe('contracted');
     const applied = h.store.auditLog.find((e) => e.action === 'contract-applied');
     expect(applied?.payload).toMatchObject({ as: 'app', approvedBy: ['lead-mobile', 'lead-payments'] });
+    expect(h.monitorRuns).toEqual([PAY.id]);
+  });
+
+  it('keeps the contract applied when the monitor enqueue fails', async () => {
+    const h = harness({ commitments: shiftScenario() });
+    await approved(h);
+    h.deps.monitor.evaluateProvider = async () => {
+      throw new Error('queue down');
+    };
+    expect((await applyContract(h.deps, REQUEST_ID)).status).toBe('done');
+    expect(h.store.auditLog.find((e) => e.action === 'monitor-enqueue-failed')?.payload).toEqual({ error: 'queue down' });
   });
 
   it('does not duplicate anything when retried, even after a crash right after creating the issue', async () => {
