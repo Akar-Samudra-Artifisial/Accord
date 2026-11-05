@@ -207,6 +207,17 @@ export const MIGRATIONS: ReadonlyArray<{ name: string; statement: string }> = [
       WHERE entity_type = 'contract' AND action LIKE 'notify:%'
         AND JSON_EXTRACT(payload, '$.status') IS NOT NULL AND JSON_EXTRACT(payload, '$.issueKey') IS NOT NULL`,
   },
+  {
+    // Charter approvers dropped at sync for missing Jira permissions, and when the approver list last changed.
+    // Own table instead of ALTER TABLE charters: every migration must stay idempotent (CREATE … IF NOT EXISTS).
+    name: 'v017_create_charter_approver_checks',
+    statement: `CREATE TABLE IF NOT EXISTS charter_approver_checks (
+      team_id VARCHAR(64) PRIMARY KEY,
+      ignored_approvers JSON NULL,
+      approvers_changed_at DATETIME NULL,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
+  },
 ];
 
 /** Applies pending migrations; safe to call on every cold start. */

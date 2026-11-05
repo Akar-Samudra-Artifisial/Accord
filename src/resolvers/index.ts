@@ -2,11 +2,11 @@ import Resolver from '@forge/resolver';
 import { clientError, UserFacingError } from '../errors';
 import { planOptions } from '../planner';
 import { demoPlannerInput } from '../demo/scenario';
-import { executeSeedStep, existingDemoProjectKey, getSeedPlan, getSeedStatus } from '../demo/seed';
+import { executeSeedStep, existingDemoProjectKey, getSeedStatus, requireSeedAccess } from '../demo/seed';
 import { SEED_STEPS, type SeedStep } from '../demo/seed-data';
 import { charterBylineState } from '../confluence/charter';
 import { getPage } from '../confluence/pages';
-import { getCharter, getTeamByKey, listTeams, type Team } from '../teams/repository';
+import { getApproverCheck, getCharter, getTeamByKey, listTeams, type Team } from '../teams/repository';
 import {
   createCharterPage,
   defaultCharterTemplate,
@@ -31,8 +31,8 @@ import {
 import { teamDirectory } from '../negotiation/deps';
 import { scheduleMonitor } from '../monitor/deps';
 import { addDemoBugs, resetDemoBugs } from '../demo/critical-bugs';
-import { demoBugPort } from '../demo/critical-bugs-port';
-import { assignDemoLead, demoLeadPort, userCanManageDemoProjects } from '../demo/demo-lead';
+import { demoBugPort, requireDemoBugPermissions } from '../demo/critical-bugs-port';
+import { assignDemoLead, demoLeadPort, userCanManageDemoProjects, userSeedAccess } from '../demo/demo-lead';
 
 type Result<T> = ({ ok: true } & T) | { ok: false; error: string };
 
@@ -54,6 +54,7 @@ function charterUrl(siteUrl: string | undefined, pageId: string | null): string 
 
 async function teamView(team: Team, siteUrl?: string) {
   const charter = await getCharter(team.id);
+  const approverCheck = await getApproverCheck(team.id);
   const capacity = await teamCapacity(team);
   return {
     teamKey: team.teamKey,
@@ -65,6 +66,8 @@ async function teamView(team: Team, siteUrl?: string) {
       missing: charter?.missingFields ?? [],
       pageId: team.charterPageId,
       url: charterUrl(siteUrl, team.charterPageId),
+      ignoredApprovers: approverCheck.ignoredCount,
+      approversChangedAt: approverCheck.approversChangedAt,
     },
     capacity,
   };
@@ -173,6 +176,7 @@ resolver.define('addDemoBugs', async ({ context }: { context: RequestContext }) 
   try {
     const projectKey = await existingDemoProjectKey('PAY');
     await requireProjectAdmin(projectKey, context.accountId);
+    await requireDemoBugPermissions(projectKey);
     return { ok: true, ...(await addDemoBugs(demoBugPort, projectKey, context.accountId ?? null)) };
   } catch (error) {
     return failure('addDemoBugs', error);
@@ -183,6 +187,7 @@ resolver.define('resetDemoBugs', async ({ context }: { context: RequestContext }
   try {
     const projectKey = await existingDemoProjectKey('PAY');
     await requireProjectAdmin(projectKey, context.accountId);
+    await requireDemoBugPermissions(projectKey);
     return { ok: true, ...(await resetDemoBugs(demoBugPort, projectKey, context.accountId ?? null)) };
   } catch (error) {
     return failure('resetDemoBugs', error);
@@ -220,6 +225,11 @@ resolver.define('makeMeDemoLead', async ({ context }: { context: RequestContext 
 
 resolver.define('getDemoOptions', () => planOptions(demoPlannerInput()));
 
+/**
+ * Open to every signed-in user of the Accord page on purpose: it lists team names, project keys,
+ * charter status and aggregate capacity, which anyone filing a dependency request needs to pick a
+ * provider. No issue data is returned, and every write resolver checks project admin (NFR-3).
+ */
 resolver.define('getTeams', async ({ context }: { context: RequestContext }): Promise<Result<{ teams: TeamView[] }>> => {
   try {
     const teams = [];
@@ -277,10 +287,25 @@ resolver.define(
   },
 );
 
-resolver.define('getSeedStatus', async ({ payload }: { payload?: { adoptExisting?: unknown } }) => {
+/**
+ * Seed status and plan. Everyone signed in sees the step list (no Jira data); only users who may seed
+ * (site admin, or admin of every target project) get `canSeed`, and only they can run steps.
+ */
+resolver.define('getSeedStatus', async ({ payload, context }: { payload?: { adoptExisting?: unknown }; context: RequestContext }) => {
   try {
-    const [steps, plan] = await Promise.all([getSeedStatus(), getSeedPlan(payload?.adoptExisting === true)]);
-    return { ok: true, steps, plan };
+    const adoptExisting = payload?.adoptExisting === true;
+    const steps = await getSeedStatus();
+    let canSeed = true;
+    let reason: string | null = null;
+    let plan = null;
+    try {
+      plan = await requireSeedAccess(context.accountId, adoptExisting, userSeedAccess);
+    } catch (error) {
+      if (!(error instanceof UserFacingError)) throw error;
+      canSeed = false;
+      reason = error.message;
+    }
+    return { ok: true, steps, plan, canSeed, reason };
   } catch (error) {
     return failure('getSeedStatus', error);
   }
@@ -295,6 +320,8 @@ resolver.define(
       if (typeof step !== 'string' || !(SEED_STEPS as readonly string[]).includes(step)) {
         return { ok: false, error: `Unknown seed step "${String(step)}"` };
       }
+      // Server-side check on every step (NFR-3); hiding the button is not enough.
+      await requireSeedAccess(context.accountId, payload.adoptExisting === true, userSeedAccess);
       const success = await executeSeedStep(step as SeedStep, {
         leadAccountId: context.accountId ?? null,
         adoptExisting: payload.adoptExisting === true,
@@ -315,7 +342,8 @@ resolver.define('getBylineState', async ({ context }: { context: RequestContext 
     if (pageId === undefined || pageId === null) return { ok: false, error: 'No Confluence page in context.' };
     // No Forge SQL here: the Confluence installation has its own (empty) database,
     // team data lives in the Jira installation. Validate the page body directly.
-    const page = await getPage(String(pageId));
+    // Read as the viewer so the byline never reveals a page the viewer cannot see (NFR-3).
+    const page = await getPage(String(pageId), 'user');
     return { ok: true, ...charterBylineState(page.title, page.body?.storage?.value ?? '') };
   } catch (error) {
     return failure('getBylineState', error);

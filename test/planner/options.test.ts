@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { computeCapacity, explainOption, planOptions } from '../../src/planner';
 import type { PlannerOption, PlannerResult } from '../../src/planner';
+import { formatDate } from '../../src/format/dates';
 import { CHARTER, baseInput, fillers, item, shiftScenario } from './fixtures';
 
 const kinds = (result: PlannerResult) => result.options.map((o) => o.kind);
@@ -149,6 +150,8 @@ describe('planOptions', () => {
         for (const value of Object.values(step.values)) {
           allowed.add(String(value));
           for (const t of String(value).match(token) ?? []) allowed.add(t);
+          // ISO date values are rendered as "Nov 29, 2026"; their day and year are traced numbers too.
+          for (const t of formatDate(String(value)).match(token) ?? []) allowed.add(t);
         }
       }
       const text = [explainOption(option), option.consequences.requester, option.consequences.provider].join(' ');

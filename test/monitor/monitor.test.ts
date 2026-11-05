@@ -140,7 +140,7 @@ describe('monitorProviderTeam', () => {
     expect(comments.map((c) => c.issueKey)).toEqual(['MOB-3', 'PAY-13']);
     expect(comments[0].mentions).toEqual(['lead-mobile', 'lead-payments-project']);
     expect(comments[0].text).toContain('now at risk');
-    expect(comments[0].text).toContain('2026-12-12');
+    expect(comments[0].text).toContain('Dec 12, 2026');
     expect(store.auditLog.filter((e) => e.action === 'status-changed')).toHaveLength(1);
 
     await monitorProviderTeam(deps, PAY.id);
@@ -204,8 +204,8 @@ describe('monitorProviderTeam', () => {
     await monitorProviderTeam(deps, PAY.id);
     const [requester, provider] = comments;
     expect(requester.issueKey).toBe('MOB-3');
-    expect(requester.text).toContain('2026-12-12');
-    expect(requester.text).toContain('2026-11-28 to 2026-11-28');
+    expect(requester.text).toContain('Dec 12, 2026');
+    expect(requester.text).toContain('the agreed date is Nov 28, 2026');
     expect(requester.text).not.toMatch(/issues are planned|pessimistic/);
     expect(provider.text).toContain('pessimistic 9 issues per sprint');
   });

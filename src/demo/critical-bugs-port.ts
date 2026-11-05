@@ -1,5 +1,7 @@
 import { Queue } from '@forge/events';
+import { UserFacingError } from '../errors';
 import { createIssues, searchIssues } from '../jira/issues';
+import { myPermissions } from '../jira/permissions';
 import { listSprints, moveIssuesToBacklog, moveIssuesToSprint } from '../jira/sprints';
 import { MONITOR_QUEUE_KEY, nearestContractProjection, type MonitorEvent } from '../monitor/monitor';
 import { monitorDeps } from '../monitor/deps';
@@ -13,6 +15,21 @@ async function requireTeam(projectKey: string) {
   const team = await getTeamByKey(projectKey);
   if (!team) throw new Error(`Demo team ${projectKey} is not registered`);
   return team;
+}
+
+/**
+ * The bug buttons create issues and move sprint work as the app, so the signed-in user must hold
+ * the same Jira permissions in the project (checked as the user, NFR-3).
+ */
+export async function requireDemoBugPermissions(projectKey: string): Promise<void> {
+  const needed = ['CREATE_ISSUES', 'SCHEDULE_ISSUES'] as const;
+  const held = await myPermissions({ projectKey }, needed, 'user');
+  const missing = needed.filter((permission) => !held.has(permission));
+  if (missing.length > 0) {
+    throw new UserFacingError(
+      `You need the Create issues and Schedule issues permissions in ${projectKey} to change its demo bugs.`,
+    );
+  }
 }
 
 export const demoBugPort: DemoBugPort = {

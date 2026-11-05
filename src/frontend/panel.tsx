@@ -23,6 +23,7 @@ import ForgeReconciler, {
 } from '@forge/react';
 import { call, DealSheetModal, StatusLozenge, type RequestStatus } from './dealsheet';
 import { defaultNeededBy } from './dates';
+import { formatDate } from '../format/dates';
 import { contractIsMoving, requestIsMoving, useBoundedPolling } from './polling';
 
 interface RequestSummary {
@@ -234,12 +235,12 @@ const App = () => {
             {request.contract?.status === 'unknown' ? <Lozenge appearance="default">Not enough data</Lozenge> : null}
             <Text weight="medium">{request.title}</Text>
           </Inline>
-          <Text color="color.text.subtle">{`${request.requester} → ${request.provider} · needed by ${request.neededBy}`}</Text>
+          <Text color="color.text.subtle">{`${request.requester} → ${request.provider} · needed by ${formatDate(request.neededBy)}`}</Text>
           {request.contract && request.contract.status !== 'applying' ? (
             <Text color={request.contract.status === 'at-risk' ? 'color.text.danger' : 'color.text.subtle'}>
               {request.contract.status === 'unknown'
-                ? `Projected delivery unknown: not enough capacity data · agreed by ${request.contract.agreedDateMax}`
-                : `Projected delivery ${request.contract.projectedDate ?? 'not checked yet'} · agreed by ${request.contract.agreedDateMax}`}
+                ? `Projected delivery unknown: not enough data · agreed by ${formatDate(request.contract.agreedDateMax)}`
+                : `Projected delivery ${formatDate(request.contract.projectedDate, 'not checked yet')} · agreed by ${formatDate(request.contract.agreedDateMax)}`}
             </Text>
           ) : null}
           {request.pendingFor.length ? <Text weight="bold">Your decision is needed.</Text> : null}

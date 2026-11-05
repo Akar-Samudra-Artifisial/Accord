@@ -30,7 +30,7 @@ describe('audit rows', () => {
       subject: 'Refund API',
       action: 'Contract status changed',
       actor: 'Accord app',
-      summary: 'on-track → at-risk; projected 2026-12-12, agreed by 2026-11-28',
+      summary: 'on-track → at-risk; projected Dec 12, 2026, agreed by Nov 28, 2026',
     });
   });
 

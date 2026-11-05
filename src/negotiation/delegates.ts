@@ -1,3 +1,4 @@
+import { formatDate, formatDateRange } from '../format/dates';
 import { buildConsequences, renderTemplate } from '../planner';
 import { mergeTraceValues } from '../planner/explain';
 import type { OptionKind, PlannerVariation, TraceStep } from '../planner';
@@ -139,7 +140,7 @@ export function buildTranscript(input: TranscriptInput): TranscriptLine[] {
         speaker: requester,
         text: variationStep
           ? renderTemplate(
-              'No offer meets the need date {neededBy}. Asks whether the minimum part can arrive {days} days earlier, by {neededByMin}.',
+              'No offer meets the need date {neededBy}. Asks whether the minimum part can arrive {days|day} earlier, by {neededByMin}.',
               { neededBy, ...variationStep.values },
             )
           : renderTemplate('No offer meets the need date {neededBy}. Asks for the minimum part earlier.', { neededBy }),
@@ -185,7 +186,7 @@ export function previewChanges(
   const changes: JiraChange[] = [
     {
       kind: 'create-issue',
-      text: `Create a Story "${request.title}" in project ${providerProjectKey}, due ${option.dateRange.max}, labelled accord.`,
+      text: `Create a Story "${request.title}" in project ${providerProjectKey}, due ${formatDate(option.dateRange.max)}, labelled accord.`,
     },
     { kind: 'link', text: `Link the new issue as blocking ${request.sourceIssueKey}.` },
   ];
@@ -201,7 +202,7 @@ export function previewChanges(
   }
   changes.push({
     kind: 'comment',
-    text: `Comment on ${request.sourceIssueKey} and on the new issue with the agreed dates ${option.dateRange.min} to ${option.dateRange.max}.`,
+    text: `Comment on ${request.sourceIssueKey} and on the new issue with the agreed dates ${formatDateRange(option.dateRange.min, option.dateRange.max)}.`,
   });
   return changes;
 }

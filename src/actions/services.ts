@@ -11,6 +11,7 @@ import { ISSUE_KEY } from '../jira/issues';
 import { requireTeamAccess, type TeamAccessChecks } from './access';
 import { contractLinks, parseBaseUrl, requestLinks, siteLinks, type SiteLinks } from './links';
 import type { ActionServices, Viewer } from './handlers';
+import { contractDisplay, neededByDates, optionDates, sprintDates } from './display';
 
 /** Production services for the Rovo actions: Forge SQL, Jira and Confluence data only (no demo data). */
 
@@ -98,8 +99,7 @@ export const actionServices: ActionServices = {
         .map((sprint) => ({
           name: sprint.name,
           state: sprint.state,
-          startDate: sprint.startDate,
-          endDate: sprint.endDate,
+          ...sprintDates(sprint.startDate, sprint.endDate),
           openCommittedIssues: committed.get(sprint.id) ?? 0,
         })),
     };
@@ -116,7 +116,7 @@ export const actionServices: ActionServices = {
       title: sheet.request.title,
       size: sheet.request.size,
       minSize: sheet.request.minSize,
-      neededBy: sheet.request.neededBy,
+      ...neededByDates(sheet.request.neededBy),
       costClass: sheet.request.costClass,
       requester: sheet.requester.name,
       provider: sheet.provider.name,
@@ -125,7 +125,7 @@ export const actionServices: ActionServices = {
       options: sheet.options.map(({ id, label, dateRange, meetsNeed, recommended, consequences, rulesUsed, explanation }) => ({
         id,
         label,
-        dateRange,
+        ...optionDates(dateRange),
         meetsNeed,
         recommended,
         consequences,
@@ -135,7 +135,7 @@ export const actionServices: ActionServices = {
       agreedOptionId: sheet.agreedOptionId,
       contract: sheet.contract
         ? {
-            ...sheet.contract,
+            ...contractDisplay(sheet.contract),
             ...contractLinks(site, { sourceIssueKey: sheet.request.sourceIssueKey, deliverableIssueKey: sheet.contract.deliverableIssueKey }),
           }
         : null,
@@ -143,12 +143,14 @@ export const actionServices: ActionServices = {
   },
 
   async evaluateOptions(requestId, earlierMinDays, viewer) {
-    const result = await evaluateRequestOptions(requestId, earlierMinDays, viewer.accountId, viewer.as);
+    const { neededBy, ...result } = await evaluateRequestOptions(requestId, earlierMinDays, viewer.accountId, viewer.as);
     const site = await links();
     return {
       ...result,
-      options: result.options.map((option) => ({
+      ...neededByDates(neededBy),
+      options: result.options.map(({ dateRange, ...option }) => ({
         ...option,
+        ...optionDates(dateRange),
         // Restricted issues keep their placeholder and get no link.
         shifted: option.shifted.map((item) => ({ ...item, url: ISSUE_KEY.test(item.key) ? site.issue(item.key) : null })),
       })),
@@ -158,7 +160,7 @@ export const actionServices: ActionServices = {
   async contracts(teamKey, viewer) {
     const site = await links();
     const rows = await contracts(viewer.accountId, teamKey, viewer.as);
-    return { teamKey: teamKey ?? null, contracts: rows.map((row) => ({ ...row, ...contractLinks(site, row) })) };
+    return { teamKey: teamKey ?? null, contracts: rows.map((row) => ({ ...contractDisplay(row), ...contractLinks(site, row) })) };
   },
 
   async createRequest(input, viewer) {

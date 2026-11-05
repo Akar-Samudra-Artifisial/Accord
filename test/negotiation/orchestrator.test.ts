@@ -128,7 +128,10 @@ describe('negotiation rounds', () => {
     const recommended = h.store.options.filter((o) => o.recommended);
     expect(recommended.map((o) => o.id)).toEqual([ranked[0]]);
     expect(recommended[0].kind).toBe('on-time-with-shift');
-    expect(h.jira.comments.map((c) => c.issueKey)).toEqual(['MOB-7', 'PAY-1', 'PAY-11', 'PAY-2', 'PAY-3']);
+    // Only the source issue: the requester has no permission on the provider issues the option would shift (NFR-3).
+    expect(recommended[0].shifted.length).toBeGreaterThan(0);
+    expect(h.jira.comments.map((c) => c.issueKey)).toEqual(['MOB-7']);
+    expect(h.jira.comments[0].text).toMatch(/Recommended delivery: [A-Z][a-z]{2} \d{1,2}, 2026/);
     // No Jira change other than comments before both leads approve (NFR-2).
     expect(h.jira.created).toEqual([]);
     expect(h.jira.sprintMoves).toEqual([]);
@@ -288,6 +291,58 @@ describe('approvals', () => {
     });
     expect(result.status).toBe('rejected');
     expect((await h.store.getRequest(REQUEST_ID))?.status).toBe('rejected');
+  });
+
+  it('refuses an approval when the approver lacks the Jira permissions for their side, and audits the check', async () => {
+    const h = harness({ commitments: shiftScenario() });
+    const [best] = await negotiated(h);
+    const asked: Array<{ scope: unknown; permissions: readonly string[] }> = [];
+    h.deps.userPermissions = async (scope, permissions) => {
+      asked.push({ scope, permissions });
+      // The Payments lead may browse and comment but not create or schedule issues.
+      return new Set(permissions.filter((permission) => !['CREATE_ISSUES', 'SCHEDULE_ISSUES'].includes(permission)));
+    };
+    await expect(
+      decide(h.deps, { requestId: REQUEST_ID, optionId: best, side: 'provider', decision: 'approve', accountId: 'lead-payments' }),
+    ).rejects.toThrow(/missing CREATE_ISSUES, SCHEDULE_ISSUES on project PAY/);
+    expect(asked).toEqual([{ scope: { projectKey: 'PAY' }, permissions: ['CREATE_ISSUES', 'SCHEDULE_ISSUES'] }]);
+    expect(h.store.approvals).toEqual([]);
+    const denied = h.store.auditLog.find((e) => e.action === 'decision-denied');
+    expect(denied?.payload).toMatchObject({ rule: 'jira-permissions', missing: ['CREATE_ISSUES', 'SCHEDULE_ISSUES'] });
+
+    // Requester side: LINK_ISSUES + ADD_COMMENTS on the source issue; granted → recorded with the check.
+    const ok = await decide(h.deps, { requestId: REQUEST_ID, optionId: best, side: 'requester', decision: 'approve', accountId: 'lead-mobile' });
+    expect(ok.status).toBe('waiting-for-other-side');
+    expect(asked[1]).toEqual({ scope: { issueKey: 'MOB-7' }, permissions: ['LINK_ISSUES', 'ADD_COMMENTS'] });
+    const approved = h.store.auditLog.find((e) => e.action === 'approved');
+    expect(approved?.payload).toMatchObject({ permissions: { granted: ['LINK_ISSUES', 'ADD_COMMENTS'], missing: [] } });
+  });
+
+  it('fails closed when the permission check itself fails', async () => {
+    const h = harness({ commitments: shiftScenario() });
+    const [best] = await negotiated(h);
+    h.deps.userPermissions = async () => {
+      throw new Error('Jira unavailable');
+    };
+    await expect(
+      decide(h.deps, { requestId: REQUEST_ID, optionId: best, side: 'requester', decision: 'approve', accountId: 'lead-mobile' }),
+    ).rejects.toThrow(/missing LINK_ISSUES, ADD_COMMENTS on MOB-7/);
+    expect(h.store.approvals).toEqual([]);
+  });
+
+  it('a rejection needs no Jira permission check (nothing changes in Jira)', async () => {
+    const h = harness({ commitments: shiftScenario() });
+    const [best] = await negotiated(h);
+    h.deps.userPermissions = async () => new Set();
+    const result = await decide(h.deps, {
+      requestId: REQUEST_ID,
+      optionId: best,
+      side: 'provider',
+      decision: 'reject',
+      reason: 'No room',
+      accountId: 'lead-payments',
+    });
+    expect(result.status).toBe('rejected');
   });
 
   it('refuses options that are not on the deal sheet', async () => {

@@ -12,6 +12,7 @@ import type {
   WorkItem,
 } from '../planner';
 import type { Team } from '../teams/repository';
+import type { JiraPermission } from '../jira/permissions';
 
 /** Lifecycle of a dependency request (PRD: Negotiating → Awaiting approval → Contracted). */
 export type RequestStatus = 'negotiating' | 'awaiting-approval' | 'approved' | 'contracted' | 'rejected' | 'failed';
@@ -175,6 +176,11 @@ export interface NegotiationDeps {
   /** Queues a contract monitor run for one provider team (after a contract is applied). */
   monitor: { evaluateProvider(providerTeamId: string): Promise<void> };
   today: () => IsoDate;
+  /**
+   * Jira permissions of the signed-in user (`asUser`), used by `decide`: the app applies the contract,
+   * so each approver must hold the Jira permissions for their side of the changes (NFR-3).
+   */
+  userPermissions(scope: { projectKey: string } | { issueKey: string }, permissions: readonly JiraPermission[]): Promise<Set<JiraPermission>>;
   /**
    * Dual control: one account may not approve for both teams unless this demo
    * switch is on (env `ACCORD_DEMO_ALLOW_SAME_APPROVER=true`, development only).

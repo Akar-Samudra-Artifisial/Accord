@@ -26,6 +26,7 @@ import { parseCreateInput, resolveTeamRef } from '../actions/handlers';
 import { defaultTitle } from '../resolvers/negotiation';
 import { actionServices, links } from '../actions/services';
 import { contractLinks } from '../actions/links';
+import { contractDisplay } from '../actions/display';
 import { listContracts as listStoredContracts } from '../negotiation/store';
 import { SEED_STEPS, type SeedStep } from '../demo/seed-data';
 import { addDemoBugs, resetDemoBugs } from '../demo/critical-bugs';
@@ -263,6 +264,13 @@ async function diagActions(query: Record<string, string[]>) {
         contractId: contract.id,
         sourceIssueKey: request.sourceIssueKey,
         deliverableIssueKey: contract.deliverableIssueKey,
+        // Same date/status display fields list-contracts returns to agents.
+        ...contractDisplay({
+          agreedDateMin: contract.agreedDateMin,
+          agreedDateMax: contract.agreedDateMax,
+          projectedDate: contract.projectedDate,
+          status: contract.status,
+        }),
         ...contractLinks(site, { sourceIssueKey: request.sourceIssueKey, deliverableIssueKey: contract.deliverableIssueKey }),
       }));
     })(),

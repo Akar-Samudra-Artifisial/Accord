@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { formatDate } from '../../src/format/dates';
 import { planOptions } from '../../src/planner';
 import type { PlannerOption, TraceStep } from '../../src/planner';
 import {
@@ -38,7 +39,8 @@ function numbersIn(text: string): string[] {
 
 function traceNumbers(options: readonly StoredOption[]): Set<string> {
   const values = options.flatMap((option) => option.trace.flatMap((step: TraceStep) => Object.values(step.values)));
-  return new Set(values.flatMap((value) => numbersIn(String(value))));
+  // An ISO date value is shown as "Nov 29, 2026", so its day and year count as traced numbers too.
+  return new Set(values.flatMap((value) => [...numbersIn(String(value)), ...numbersIn(formatDate(String(value)))]));
 }
 
 describe('requesterDecision', () => {

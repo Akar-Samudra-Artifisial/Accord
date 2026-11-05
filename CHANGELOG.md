@@ -1,96 +1,110 @@
 # Changelog
 
-Semua perubahan penting dicatat di sini. Format mengikuti Keep a Changelog, versi mengikuti SemVer.
+All notable changes are recorded here. The format follows Keep a Changelog; versions follow SemVer.
 
 ## [Unreleased]
 
 ### Added
-- Scaffolding Forge app (UI Kit, runtime `nodejs24.x`, TypeScript): manifest dengan issue panel Jira, global page, byline Confluence, consumer antrean negosiasi, monitor harian, Forge SQL, agen Rovo "Accord Team Delegate" dan "Accord Broker", serta enam action Rovo (belum di-deploy; `app.id` masih placeholder sampai `forge register`).
-- Skema Forge SQL untuk tim, piagam, throughput, permintaan, putaran negosiasi, opsi, persetujuan, kontrak, relasi dependensi, dan jejak audit.
-- Planner deterministik: kapasitas realistis/pesimis dari 6 sprint terakhir, opsi tepat waktu, tepat waktu dengan penggeseran (garis merah tidak pernah digeser), sebagian, lebih lambat, dan tolak berdasarkan porsi maksimal piagam; maksimal 4 opsi berurutan dengan satu rekomendasi.
-- Penjelasan opsi dalam bahasa Inggris netral yang setiap angkanya berasal dari jejak perhitungan, plus konsekuensi untuk tim peminta dan penyedia.
-- Variasi "bagian minimum lebih awal N hari" untuk putaran negosiasi.
-- Skenario demo Mobile/Payments dengan riwayat throughput simulasi; action `evaluate-options` sementara memakai skenario ini.
-- Data layer Jira (board Scrum, sprint, issue sprint, pencarian JQL, bulk create) dan Confluence (space, halaman v2, label) via `asApp`/`asUser`.
-- Piagam tim: generator template storage format (heading h2 per field), parser, dan validator yang mengembalikan field yang kurang; hasil disimpan di tabel `charters`.
-- Kapasitas & komitmen: sampel throughput dari sprint Jira yang selesai (atau Simulated history), komitmen sprint aktif + berikutnya + issue ber-due date.
-- Generator demo data bertahap & idempoten: project MOB/PAY dengan board Scrum, sprint aktif + berikutnya berisi issue, halaman piagam berlabel `accord-charter`, dan 6 sprint throughput simulasi per tim.
-- Global page: tab Teams (status piagam, rentang kapasitas, lencana "Simulated history"/"Limited data", tombol "Create charter page"), tab Demo (seed dengan konfirmasi dan status per langkah); byline Confluence menampilkan "Charter valid" atau field yang kurang.
-- Web trigger diagnostik khusus development (`accord-dev-diag`); hasil spike M0 di `docs/spikes.md`.
-- Permintaan dependensi dari issue panel Jira (judul, ukuran, bagian minimum, tanggal butuh, kelas biaya) yang memicu negosiasi dua putaran lewat antrean `accord-negotiation`: putaran 1 delegasi penyedia (planner) lalu delegasi peminta (minta bagian minimum lebih awal bila tak ada opsi yang memenuhi), putaran 2 broker mengurutkan opsi, menandai rekomendasi, dan berkomentar di issue sumber & penyedia. Consumer idempoten dan retry terbatas; kegagalan dicatat di putaran sebelum status `failed`.
-- Deal sheet (modal) berisi opsi, konsekuensi, transkrip yang setiap angkanya berasal dari jejak planner, dan pratinjau perubahan Jira; approval dua lead (piagam/lead tim) untuk opsi yang sama, identitas dari konteks Forge, penolakan wajib beralasan.
-- Apply-contract setelah dua approve: issue deliverable di project penyedia, link "blocks" ke issue sumber, pemindahan issue tergeser ke sprint target/backlog, komentar, kontrak, relasi dependensi, dan audit; idempoten bila diulang.
-- Global page: tab Inbox (permintaan yang menunggu keputusan Anda) dan Contracts; action Rovo memakai layanan negosiasi yang sama.
-- Aksi diagnostik `create-request` dan `request` di `accord-dev-diag` (khusus development).
-- Tombol "Retry negotiation" di deal sheet untuk request `failed` atau macet di `negotiating`/`approved` lebih dari 5 menit (pembuat atau lead kedua tim); pesan "Still working — Refresh" saat polling habis.
-- Badge "Demo mode: same approver allowed" bila `ACCORD_DEMO_ALLOW_SAME_APPROVER=true`.
-- Aksi diagnostik `verify-blocks-link`; bagian "Before production" di README.
-- Monitor kontrak harian: proyeksi tanggal per kontrak aktif dari komitmen sprint penyedia + kontrak sebelumnya, status `at-risk`/`on-track` (sekali per perubahan, idempoten), komentar netral dengan mention lead di issue sumber & deliverable, audit; dijalankan per tim lewat antrean `accord-monitor` dan tombol "Run daily monitor now".
-- Lencana "At risk" dan kolom tanggal proyeksi di issue panel dan tab Contracts; ringkasan dependensi antar tim (FR-13).
-- Tab Audit: entri audit terbaru untuk tim yang bisa Anda akses, tanpa account id mentah.
-- Tombol demo "Add two critical bugs to Payments" dan "Reset demo bugs" (idempoten, khusus admin project PAY).
-- Issue seed ketujuh di sprint aktif Payments agar skenario "on time with shift" muncul.
-- Action Rovo memakai data nyata (piagam, kapasitas, request, opsi, kontrak) dengan validasi input; action buat request menerima `costClass`; prompt agen melarang angka karangan, approve, dan menebak.
-- Aksi diagnostik `monitor`, `demo-bugs`, `actions`, `verify-sprint-move`, `audit`.
-- Status kontrak `unknown` ("Not enough data") bila kapasitas penyedia tidak punya data atau pesimis 0; tanpa komentar.
-- Monitor dijadwalkan untuk tim penyedia segera setelah apply-contract, sehingga kontrak baru langsung punya tanggal proyeksi.
-- Output `list-contracts` berisi `role` (`provider`/`requester`), `requesterTeamKey`, dan `providerTeamKey`.
-- Action Rovo `list-teams` (team key, nama, project key) untuk kedua agen; prompt agen mewajibkan resolusi nama tim lewat `list-teams`.
-- Aksi demo "Make me the demo lead" (khusus site admin atau admin project demo): pemanggil menjadi lead project demo milik Accord dan satu-satunya approver piagam demo, lalu piagam disinkronkan; idempoten.
-- Seed demo memakai akun pemicu dari UI sebagai lead & approver; seed diag menerima `?lead=<accountId>` atau `ACCORD_DEV_OWNER_ACCOUNT_ID`. Aksi diagnostik `demo-lead` dan `user-search`.
-- Output action Rovo yang menyebut issue, kontrak, request, atau piagam memuat `url` absolut dari `baseUrl` site (serverInfo, di-cache); prompt kedua agen hanya boleh menautkan URL dari output action.
-- Polling terbatas (3 detik × 20) di tab Inbox/Contracts, issue panel, dan deal sheet selama status masih transisional (negotiating, approved, applying, kontrak belum dievaluasi) atau setelah approve/reject dan aksi demo, dengan tombol Refresh sebagai cadangan.
-- Refresh ringan tab Inbox/Contracts di global page: tiap 12 detik sampai 10 menit sejak interaksi terakhir (ganti tab, keputusan, aksi demo), dan sekali lagi saat tab dipilih; daftar hanya di-render ulang bila data berubah. Request baru dari agen langsung tampil dengan badge "Negotiating".
-- Aksi diagnostik `actions` menerima `?titleIssue=<key>&title=…` untuk pratinjau judul request tanpa membuat request.
+- Forge app scaffolding (UI Kit, runtime `nodejs24.x`, TypeScript): manifest with a Jira issue panel, global page, Confluence byline, negotiation queue consumer, daily monitor, Forge SQL, the Rovo agents "Accord Team Delegate" and "Accord Broker", and six Rovo actions (not deployed yet; `app.id` stays a placeholder until `forge register`).
+- Forge SQL schema for teams, charters, throughput, requests, negotiation rounds, options, approvals, contracts, dependency edges and the audit trail.
+- Deterministic planner: realistic/pessimistic capacity from the last 6 sprints; options on time, on time with a shift (red lines are never moved), partial, later, and reject based on the charter's maximum share; at most 4 ranked options with one recommendation.
+- Option explanations in neutral English where every number comes from the calculation trace, plus consequences for the requesting and providing teams.
+- "Minimum part N days earlier" variation for negotiation rounds.
+- Mobile/Payments demo scenario with simulated throughput history; the `evaluate-options` action uses this scenario for now.
+- Jira data layer (Scrum boards, sprints, sprint issues, JQL search, bulk create) and Confluence data layer (spaces, v2 pages, labels) via `asApp`/`asUser`.
+- Team charters: storage-format template generator (one h2 heading per field), parser and validator that returns the missing fields; results are stored in the `charters` table.
+- Capacity and commitments: throughput samples from closed Jira sprints (or simulated history), commitments from the active and next sprint plus issues with a due date.
+- Step-by-step, idempotent demo data generator: MOB/PAY projects with a Scrum board, an active and next sprint with issues, charter pages labelled `accord-charter`, and 6 simulated throughput sprints per team.
+- Global page: Teams tab (charter status, capacity range, "Simulated history"/"Limited data" badges, "Create charter page" button) and Demo tab (seed with confirmation and per-step status); the Confluence byline shows "Charter valid" or the missing fields.
+- Development-only diagnostic web trigger (`accord-dev-diag`); M0 spike results in `docs/spikes.md`.
+- Dependency requests from the Jira issue panel (title, size, minimum part, needed-by date, cost class) start a two-round negotiation through the `accord-negotiation` queue: in round 1 the provider delegate (planner) and then the requester delegate (asks for the minimum part earlier when no option meets the need); in round 2 the broker ranks the options, marks a recommendation and comments on the source and provider issues. The consumer is idempotent with bounded retries; failures are recorded on the round before the status becomes `failed`.
+- Deal sheet (modal) with options, consequences, a transcript where every number comes from the planner trace, and a preview of the Jira changes; both leads (charter approvers or team lead) approve the same option, identity comes from the Forge context, and a rejection needs a reason.
+- Apply-contract after both approvals: deliverable issue in the provider project, "blocks" link to the source issue, shifted issues moved to their target sprint or the backlog, comments, contract, dependency edge and audit; idempotent when repeated.
+- Global page: Inbox tab (requests waiting for your decision) and Contracts tab; Rovo actions use the same negotiation services.
+- Diagnostic actions `create-request` and `request` in `accord-dev-diag` (development only).
+- "Retry negotiation" button in the deal sheet for requests that are `failed` or stuck in `negotiating`/`approved` for more than 5 minutes (creator or leads of either team); "Still working — Refresh" message when polling ends.
+- "Demo mode: same approver allowed" badge when `ACCORD_DEMO_ALLOW_SAME_APPROVER=true`.
+- Diagnostic action `verify-blocks-link`; "Before production" section in the README.
+- Daily contract monitor: projected date per active contract from the provider's sprint commitments and earlier contracts, `at-risk`/`on-track` status (once per change, idempotent), neutral comments mentioning the leads on the source and deliverable issues, and audit; runs per team through the `accord-monitor` queue and the "Run daily monitor now" button.
+- "At risk" badge and a projected date column in the issue panel and the Contracts tab; cross-team dependency summary (FR-13).
+- Audit tab: latest audit entries for the teams you can access, without raw account ids.
+- Demo buttons "Add two critical bugs to Payments" and "Reset demo bugs" (idempotent, PAY project admins only).
+- Seventh seed issue in the Payments active sprint so the "on time with shift" scenario appears.
+- Rovo actions use real data (charters, capacity, requests, options, contracts) with input validation; the create-request action accepts `costClass`; the agent prompts forbid invented numbers, approving and guessing.
+- Diagnostic actions `monitor`, `demo-bugs`, `actions`, `verify-sprint-move`, `audit`.
+- Contract status `unknown` ("Not enough data") when the provider's capacity has no data or a pessimistic value of 0; no comment is posted.
+- The monitor is scheduled for the provider team right after apply-contract, so a new contract gets a projected date immediately.
+- `list-contracts` output includes `role` (`provider`/`requester`), `requesterTeamKey` and `providerTeamKey`.
+- Rovo action `list-teams` (team key, name, project key) for both agents; the agent prompts require resolving team names through `list-teams`.
+- Demo action "Make me the demo lead" (site admins or admins of the demo projects only): the caller becomes lead of Accord's demo projects and the only approver of the demo charters, then the charters are synced; idempotent.
+- The demo seed uses the account that starts it from the UI as lead and approver; the diag seed accepts `?lead=<accountId>` or `ACCORD_DEV_OWNER_ACCOUNT_ID`. Diagnostic actions `demo-lead` and `user-search`.
+- Rovo action output that mentions an issue, contract, request or charter includes an absolute `url` built from the site `baseUrl` (serverInfo, cached); both agent prompts may only link URLs from action output.
+- Bounded polling (3 seconds × 20) in the Inbox/Contracts tabs, the issue panel and the deal sheet while a status is transitional (negotiating, approved, applying, contract not yet evaluated) or after approve/reject and demo actions, with a Refresh button as a fallback.
+- Light refresh of the Inbox/Contracts tabs on the global page: every 12 seconds for up to 10 minutes after the last interaction (tab change, decision, demo action), and once more when a tab is selected; lists re-render only when the data changed. New requests from the agent appear right away with a "Negotiating" badge.
+- Diagnostic action `actions` accepts `?titleIssue=<key>&title=…` to preview a request title without creating a request.
+- Teams tab shows how many charter approvers were ignored for missing Jira permissions and an "Approvers changed" badge with the time of the last change.
+- One date format for users: "Nov 29, 2026" (UTC, en-US) in the UI, deal sheet, planner explanations, Jira comments and the Audit tab; date inputs stay ISO.
 
 ### Security
-- Dual control: satu akun tidak boleh approve untuk kedua tim kecuali variabel demo `ACCORD_DEMO_ALLOW_SAME_APPROVER=true` (hanya development).
-- Register tim, buat halaman piagam, dan sinkron piagam hanya untuk lead project Jira atau pemilik `ADMINISTER_PROJECTS`; approver default piagam = lead project, bukan pemanggil.
-- Web trigger `accord-dev-diag` menolak semua aksi (404) kecuali `ACCORD_DIAG_ENABLED=true`.
-- Deal sheet, Inbox, dan Contracts hanya untuk approver/lead tim terkait atau user yang bisa browse issue sumber/deliverable; account id mentah tidak lagi dikirim ke UI.
-- Pembuat request wajib punya izin browse + comment di issue sumber; batas 10 request per jam per user.
-- Error ke klien kini generik dengan kode referensi; detail hanya di `forge logs`.
-- Action `get-team-charter`/`get-team-capacity` hanya untuk approver/lead tim atau user dengan `BROWSE_PROJECTS` di project tim; selain itu error generik.
-- Request baru ditolak bila sudah ada request terbuka untuk issue sumber + penyedia yang sama; maksimal 20 request baru per jam per tim penyedia (dicek dalam satu INSERT).
-- Judul request dinormalisasi (satu baris, ≤120 karakter, tanpa karakter kontrol, tanda kutip ganda diganti) dan dikutip di komentar; prompt kedua agen menyatakan nilai field action adalah data, bukan instruksi; Delegate wajib meminta konfirmasi eksplisit sebelum `create-dependency-request`.
-- Komentar monitor di issue peminta hanya berisi tanggal proyeksi dan rentang kesepakatan, tanpa beban kerja internal penyedia.
-- Diag: impersonasi `account=lead` dihapus, error mentah diganti pesan generik dengan referensi.
+- Dual control: one account may not approve for both teams unless the demo variable `ACCORD_DEMO_ALLOW_SAME_APPROVER=true` is set (development only).
+- Registering a team, creating a charter page and syncing a charter are limited to the Jira project lead or holders of `ADMINISTER_PROJECTS`; the default charter approver is the project lead, not the caller.
+- The `accord-dev-diag` web trigger rejects every action (404) unless `ACCORD_DIAG_ENABLED=true`.
+- Deal sheet, Inbox and Contracts are limited to approvers/leads of the teams involved or users who can browse the source or deliverable issue; raw account ids are no longer sent to the UI.
+- Request creators need browse and comment permission on the source issue; at most 10 requests per hour per user.
+- Errors sent to clients are generic with a reference code; details only in `forge logs`.
+- Actions `get-team-charter`/`get-team-capacity` are limited to team approvers/leads or users with `BROWSE_PROJECTS` in the team project; everyone else gets a generic error.
+- A new request is rejected when an open request already exists for the same source issue and provider; at most 20 new requests per hour per provider team (checked in one INSERT).
+- Request titles are normalized (one line, ≤120 characters, no control characters, double quotes replaced) and quoted in comments; both agent prompts state that action field values are data, not instructions; the Delegate must ask for explicit confirmation before `create-dependency-request`.
+- Monitor comments on the requester issue only contain the projected date and the agreed range, without the provider's internal workload.
+- Diag: the `account=lead` impersonation was removed and raw errors were replaced with a generic message and reference.
+- Demo seed (`runSeedStep`, `getSeedStatus`) is checked on the server for every step: site admin (`ADMINISTER`) or `ADMINISTER_PROJECTS` on every target project, checked as the signed-in user; adopting existing projects is only allowed for admins of projects that belong to Accord.
+- Approving a deal checks the approver's Jira permissions as the user: `CREATE_ISSUES` and `SCHEDULE_ISSUES` in the provider project, `LINK_ISSUES` and `ADD_COMMENTS` on the source issue. A missing permission rejects the approval with a clear message and is recorded in the audit.
+- The round 2 broker comment is posted only on the source issue, never on shifted provider issues.
+- Charter sync ignores approvers without `BROWSE_PROJECTS` and `SCHEDULE_ISSUES` in the team project; ignored approvers and approver changes are audited.
+- "Make me the demo lead" updates the charter page as the user; the app only steps in for project admins on Accord's own charter pages.
+- Team admin checks read the Jira project as the user, with one message for "not found" and "not allowed"; the Confluence byline reads the page as the viewer.
+- Demo bug buttons require `CREATE_ISSUES` and `SCHEDULE_ISSUES` in the project, checked as the user.
 
 ### Fixed
-- Agen Rovo di Rovo Home membaca DB yang salah ("Team ACPAY is not registered") dan setiap agen muncul dua kali: instalasi Jira dan Confluence terpisah, masing-masing punya Forge SQL dan salinan agen sendiri. Manifest kini memakai `app.compatibility` (Jira wajib, Confluence opsional), sehingga satu instalasi per site dipakai bersama oleh Jira dan Confluence.
-- Default "Needed by" di issue panel tidak lagi tampil 2/18/1993; nilainya kini hari ini (UTC) + 21 hari.
-- Request bisa macet di `negotiating` bila broker selesai tapi transisi status hilang; round 2 kini melanjutkan transisinya.
-- Race reject vs approve: approval disisipkan hanya selama status `awaiting-approval` (INSERT … SELECT), reject mengklaim status dulu, dan UI tidak lagi menerima status `rejected` palsu.
-- Arah link Blocks: deliverable "blocks" issue sumber, dicek peka arah (terverifikasi di site).
-- Urutan jejak audit kini berdasarkan waktu (id Forge SQL tidak berurutan).
-- Deliverable ganda setelah crash: intent di SQL sebelum create + jeda pencarian JQL; opsi kontrak diambil dari kontrak tersimpan.
-- Redaksi key memakai batas kata (PAY-1 tidak mengenai PAY-11) dan juga meredaksi `sources`.
-- Request yatim saat push antrean gagal kini berstatus `failed`.
-- Komentar Accord maksimal sekali per issue/langkah (penanda SQL).
-- Byline "Accord charter" di Confluence menampilkan "Unknown SQL execution error": byline kini memvalidasi halaman piagam langsung dari isi halaman tanpa Forge SQL (database instalasi Confluence terpisah dari Jira), dan error resolver dicatat ke `forge logs`.
-- Push ke queue Forge (`accord-negotiation`, `accord-demo-seed`) selalu `400 Bad Request`: modul `consumer` kini memakai format `@forge/events` v2+ (`function`, bukan `resolver`) dan consumer membaca `event.body` dari `AsyncEvent`.
-- Form permintaan di issue panel kehilangan karakter saat diketik cepat: kini memakai `Form`/`useForm` UI Kit (tak terkontrol); field project key di tab Teams juga tak terkontrol.
-- Tombol approve tetap aktif untuk tim yang sudah approve; kini hanya tim yang belum memutuskan (atau saat kedua tim memilih opsi berbeda) yang bisa approve.
-- Judul "Accord" tampil dua kali di global page.
-- Monitor dan Audit tidak lagi memakai daftar kontrak ber-`LIMIT 100`: query per penyedia/request tanpa batas, sehingga beban di depan menghitung semua kontrak.
-- Notifikasi monitor memakai marker atomik (`contract_notifications`, unique contract + urutan perubahan + issue) dan membandingkan dengan notifikasi terakhir, sehingga retry setelah crash tetap mengirim tepat satu komentar per perubahan dan issue; marker lama dari audit dibawa lewat migrasi.
-- Kolom Details di Audit menampilkan nama opsi dan rentang tanggal, bukan "approved option 4".
-- Diag sprint move mengembalikan issue ke backlog bila asalnya dari backlog.
-- Cek izin project di Audit berjalan paralel dan dilewati untuk tim tempat user menjadi approver.
-- Load pertama global page di instalasi baru gagal (`Failed to execute migration` v008–v010) karena resolver paralel menjalankan DDL bersamaan: migrasi kini satu jalur per instance (promise di-memoize), konflik migrasi di-retry dengan backoff + jitter (4 percobaan, cause dicatat ke log), dan dijalankan juga lewat trigger `avi:forge:installed:app`/`avi:forge:upgraded:app`; resolver tetap memakai `ensureSchema` sebagai fallback. Test memastikan semua migrasi idempoten.
-- Seed demo tidak lagi bentrok dengan project MOB/PAY milik pihak lain: key yang sudah dipakai project non-Accord dilewati (`ACMOB`/`ACPAY`, lalu `ACMOB2` …), begitu pula space Confluence `ACCORD` (`ACCORD2` …). Project dikenali milik Accord lewat property `accord.demo` atau tabel `teams` (nama "Mobile"/"Payments"); space lewat nama "Accord team charters" atau halaman piagam tim terdaftar.
+- Rovo agents in Rovo Home read the wrong database ("Team ACPAY is not registered") and every agent appeared twice: the Jira and Confluence installations were separate, each with its own Forge SQL and agent copy. The manifest now uses `app.compatibility` (Jira required, Confluence optional), so one installation per site is shared by Jira and Confluence.
+- The default "Needed by" in the issue panel no longer shows 2/18/1993; it is now today (UTC) + 21 days.
+- A request could get stuck in `negotiating` when the broker finished but the status transition was lost; round 2 now resumes the transition.
+- Reject vs approve race: approvals are inserted only while the status is `awaiting-approval` (INSERT … SELECT), reject claims the status first, and the UI no longer accepts a false `rejected` status.
+- Blocks link direction: the deliverable "blocks" the source issue, checked direction-aware (verified on a site).
+- The audit trail is ordered by time (Forge SQL ids are not sequential).
+- Duplicate deliverables after a crash: an intent is stored in SQL before create plus a JQL search pause; the contract option is taken from the stored contract.
+- Key redaction uses word boundaries (PAY-1 does not match PAY-11) and also redacts `sources`.
+- Orphaned requests are marked `failed` when the queue push fails.
+- Accord comments at most once per issue and step (SQL marker).
+- The Confluence "Accord charter" byline showed "Unknown SQL execution error": the byline now validates the charter page directly from the page body without Forge SQL (the Confluence installation's database is separate from Jira's), and resolver errors are logged to `forge logs`.
+- Pushes to Forge queues (`accord-negotiation`, `accord-demo-seed`) always returned `400 Bad Request`: the `consumer` modules now use the `@forge/events` v2+ format (`function`, not `resolver`) and consumers read `event.body` from `AsyncEvent`.
+- The issue panel request form lost characters when typing fast: it now uses the uncontrolled UI Kit `Form`/`useForm`; the project key field in the Teams tab is uncontrolled too.
+- The approve button stayed active for a team that had already approved; now only teams that have not decided (or when both teams chose different options) can approve.
+- The "Accord" title appeared twice on the global page.
+- Monitor and Audit no longer use a contract list with `LIMIT 100`: queries per provider/request are unbounded, so the work ahead counts every contract.
+- Monitor notifications use an atomic marker (`contract_notifications`, unique per contract + change sequence + issue) and compare with the last notification, so a retry after a crash still sends exactly one comment per change and issue; old markers from the audit are carried over by a migration.
+- The Audit Details column shows the option name and date range instead of "approved option 4".
+- The diag sprint move returns the issue to the backlog when it came from the backlog.
+- Project permission checks in Audit run in parallel and are skipped for teams where the user is an approver.
+- The first load of the global page on a new installation failed (`Failed to execute migration` v008–v010) because parallel resolvers ran DDL at the same time: migrations now run on one path per instance (memoized promise), migration conflicts are retried with backoff and jitter (4 attempts, cause logged), and they also run from the `avi:forge:installed:app`/`avi:forge:upgraded:app` triggers; resolvers still call `ensureSchema` as a fallback. A test ensures every migration is idempotent.
+- The demo seed no longer collides with MOB/PAY projects owned by someone else: keys already used by non-Accord projects are skipped (`ACMOB`/`ACPAY`, then `ACMOB2` …), and so is the Confluence space `ACCORD` (`ACCORD2` …). Projects are recognized as Accord's through the `accord.demo` property or the `teams` table (names "Mobile"/"Payments"); spaces through the name "Accord team charters" or a registered team's charter page.
+- The Audit tab Refresh button reloads and redraws the table, so new events appear without switching tabs.
 
 ### Changed
-- `teamKey`/`providerTeamKey` di action Rovo menerima key atau nama tim terdaftar (case-insensitive) dan di-resolve ke key Accord; key/nama tak dikenal atau ambigu ditolak dengan daftar tim valid (mis. `PAY` milik pihak lain di one-atlas).
-- Tombol "Add critical bugs to Payments" menghitung jumlah bug (maks 8, label `accord-demo-bug` + garis merah piagam) dari proyeksi monitor kontrak terdekat sampai benar-benar At risk, hanya menambah kekurangan, lalu langsung mengantrekan monitor; reset memindahkan bug demo ke backlog dan mengantrekan monitor lagi.
-- Judul request kini opsional (action & Delegate): tanpa judul dipakai summary issue sumber; kartu konfirmasi tetap muncul. Judul placeholder (kosong, diapit tanda kurung, atau berisi "summary of the source issue") diperlakukan sebagai kosong; deskripsi input `title` dan prompt Delegate melarang mengisi judul placeholder.
-- Tab Demo, tombol critical bugs, dan diag memakai key project/space yang benar-benar dipakai seed (rencana seed di `getSeedStatus`; status diag menampilkan `seedPlan` dan migrasi yang belum jalan).
-- Scope tambahan Jira/Confluence untuk Agile API, pembuatan project, space, dan label.
-- Pemakaian scope didokumentasikan (`docs/spikes.md`, README "Before production"); scope khusus seed tetap ada sampai demo dipisah.
-- Data planning Jira dimuat sekali per job putaran 1; Inbox/Contracts tanpa N+1 dan filter viewer sebelum limit.
-- Retry antrean: 5 percobaan (batas 4 retry Forge) dengan backoff 10/20/40/80 detik.
-- Migrasi v012–v014: UNIQUE `dependency_edges.contract_id`, index `requests.source_issue_key` dan `contracts.deliverable_issue_key`.
-- Validasi project key di JQL dan `costClass` di action Rovo hanya nilai enum.
-- Deal sheet dirapikan: satu kartu opsi rekomendasi/disepakati di atas, opsi lain di bawahnya, detail ("Why these numbers", aturan piagam, pratinjau perubahan Jira) dan transkrip bisa dilipat; status per tim ("Mobile lead: approved by you · Payments lead: decision pending"); setelah kontrak aktif tampil "Changes applied" dengan tautan issue deliverable, link, pemindahan sprint, dan komentar.
-- Pesan keputusan memakai nama opsi + rentang tanggal, bukan ID internal opsi.
-- Issue panel memperbarui badge status sendiri (polling terbatas, refresh setelah kirim/keputusan/tutup modal) dengan tombol Refresh sebagai cadangan.
+- `teamKey`/`providerTeamKey` in Rovo actions accept a key or a registered team name (case-insensitive) and resolve it to the Accord key; unknown or ambiguous keys/names are rejected with the list of valid teams (for example `PAY` owned by someone else on one-atlas).
+- The "Add critical bugs to Payments" button computes the number of bugs (at most 8, label `accord-demo-bug` plus a charter red line) from the monitor projection of the nearest contract until it is really At risk, adds only the shortfall, then queues the monitor right away; reset moves the demo bugs to the backlog and queues the monitor again.
+- Request titles are now optional (action and Delegate): without a title the source issue summary is used; the confirmation card still appears. Placeholder titles (empty, wrapped in brackets, or containing "summary of the source issue") are treated as empty; the `title` input description and the Delegate prompt forbid placeholder titles.
+- The Demo tab, the critical bugs buttons and the diag use the project/space keys the seed actually uses (seed plan in `getSeedStatus`; the diag status shows `seedPlan` and pending migrations).
+- Additional Jira/Confluence scopes for the Agile API, project creation, spaces and labels.
+- Scope usage is documented (`docs/spikes.md`, README "Before production"); seed-only scopes stay until the demo is split out.
+- Jira planning data is loaded once per round 1 job; Inbox/Contracts without N+1 queries and with the viewer filter applied before the limit.
+- Queue retries: 5 attempts (Forge limit of 4 retries) with 10/20/40/80 second backoff.
+- Migrations v012–v014: UNIQUE `dependency_edges.contract_id`, indexes on `requests.source_issue_key` and `contracts.deliverable_issue_key`.
+- Project key validation in JQL, and `costClass` in Rovo actions accepts enum values only.
+- Deal sheet cleanup: one recommended/agreed option card on top with the other options below, collapsible details ("Why these numbers", charter rules, Jira change preview) and transcript; per-team status ("Mobile lead: approved by you · Payments lead: decision pending"); once the contract is active, "Changes applied" shows links to the deliverable issue, the link, sprint moves and comments.
+- Decision messages use the option name and date range instead of the internal option id.
+- The issue panel updates its own status badge (bounded polling, refresh after submit/decision/closing the modal) with a Refresh button as a fallback.
+- Contracts with no projection show "Not enough data" everywhere (was "Not enough capacity data" in the Contracts tab).
+- Rovo action output carries display fields for agents: `dateRangeDisplay`, `neededByDisplay`, `agreedDisplay`, `projectedDisplay`, `startDateDisplay`/`endDateDisplay` ("Nov 29, 2026") and `statusDisplay` ("On track", "At risk", "Not enough data"); raw values are renamed to `*Iso` and `statusCode`. The Delegate and Broker prompts show dates and statuses as given in the `*Display` fields.
+- Counts in UI text, Jira comments, planner explanations and transcripts agree with their noun ("1 issue", "1 sprint", "1 option") through a shared `plural` helper.
+- A date span whose ends are the same day reads "on Nov 29, 2026" instead of "between Nov 29, 2026 and Nov 29, 2026".
