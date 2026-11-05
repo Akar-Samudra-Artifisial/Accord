@@ -13,7 +13,7 @@ import {
   type RequesterDecision,
   type Side,
 } from './delegates';
-import { APP_CREATOR } from './types';
+import { APP_CREATOR, LINK_CREATED_STEP } from './types';
 import type {
   Contract,
   DependencyRequest,
@@ -510,13 +510,14 @@ export async function applyContract(deps: NegotiationDeps, requestId: string): P
   const parentContract = renegotiation ? await deps.store.getContract(renegotiation.parentRequestId) : null;
 
   // A renegotiation keeps the deliverable of the contract it replaces and only moves its due date.
+  const deliverableCreated = !parentContract?.deliverableIssueKey;
   const deliverable = parentContract?.deliverableIssueKey
     ? await reuseDeliverable(deps, request, contract, parentContract.deliverableIssueKey, dates.max, actor)
     : await ensureDeliverable(deps, request, provider, contract, dates.max);
 
   if (!(await deps.jira.hasBlocksLink(deliverable, request.sourceIssueKey))) {
     await deps.jira.linkBlocks(deliverable, request.sourceIssueKey);
-    await deps.store.audit('contract', String(contract.id), 'link-created', null, {
+    await deps.store.audit('contract', String(contract.id), LINK_CREATED_STEP, null, {
       blocker: deliverable,
       blocked: request.sourceIssueKey,
       ...actor,
@@ -540,12 +541,14 @@ export async function applyContract(deps: NegotiationDeps, requestId: string): P
 
   const agreed = formatDateRange(dates.min, dates.max);
   const replaces = parentContract ? ` This replaces the earlier agreement (${formatDateRange(parentContract.agreedDateMin, parentContract.agreedDateMax)}).` : '';
+  // Same words as the deal sheet's applied changes ("Created X" / "Linked existing X").
+  const provenance = `${deliverableCreated ? 'Created' : 'Linked existing'} ${deliverable} in ${provider.jiraProjectKey}.`;
   await commentOnce(
     deps,
     requestId,
     `comment:contract:${request.sourceIssueKey}`,
     request.sourceIssueKey,
-    `Accord contract: ${provider.name} delivers ${quotedTitle(request.title)} as ${deliverable}, agreed ${agreed}. ` +
+    `Accord contract: ${provider.name} delivers ${quotedTitle(request.title)}, agreed ${agreed}. ${provenance} ` +
       `Approved by the ${requester.name} and ${provider.name} leads.${replaces}`,
   );
   await commentOnce(
@@ -553,7 +556,7 @@ export async function applyContract(deps: NegotiationDeps, requestId: string): P
     requestId,
     `comment:contract:${deliverable}`,
     deliverable,
-    `Accord contract with ${requester.name} (${request.sourceIssueKey}): agreed delivery ${agreed}.` +
+    `Accord contract with ${requester.name} (${request.sourceIssueKey}): agreed delivery ${agreed}. ${provenance}` +
       (option.shifted.length ? ` Moved to make room: ${option.shifted.map((item) => item.key).join(', ')}.` : '') +
       replaces,
   );
@@ -569,11 +572,14 @@ export async function applyContract(deps: NegotiationDeps, requestId: string): P
     });
   }
   await deps.store.setContractStatus(requestId, 'on-track');
+  const linkCreated = await deps.store.hasContractStep(contract.id, LINK_CREATED_STEP);
   if (await deps.store.transition(requestId, ['approved'], 'contracted')) {
     await deps.store.audit('contract', String(contract.id), 'contract-applied', null, {
       requestId,
       optionId: option.id,
       deliverable,
+      deliverableCreated,
+      linkCreated,
       agreed: dates,
       ...actor,
     });
@@ -585,7 +591,10 @@ export async function applyContract(deps: NegotiationDeps, requestId: string): P
     const message = error instanceof Error ? error.message : String(error);
     await deps.store.audit('contract', String(contract.id), 'monitor-enqueue-failed', null, { error: message.slice(0, 500) });
   }
-  return { status: 'done', detail: `contract ${contract.id}, deliverable ${deliverable}` };
+  return {
+    status: 'done',
+    detail: `contract ${contract.id}, ${deliverableCreated ? 'created' : 'linked existing'} ${deliverable}${linkCreated ? '' : ' (blocks link already there)'}`,
+  };
 }
 
 export function contractLabel(requestId: string): string {
@@ -873,6 +882,50 @@ export async function cancelUndecidedRenegotiations(
     cancelled.push(requestId);
   }
   return cancelled;
+}
+
+export const BACK_ON_TRACK_REASON = 'Contract back on track';
+const BACK_ON_TRACK_ACTOR_REASON = 'Contract monitor without a user context; withdraws the renegotiation as the app (FR-14).';
+
+export interface BackOnTrackCancellation {
+  cancelled: string[];
+  /** True when a cancelled renegotiation had been announced on the source issue (so its withdrawal is worth a sentence). */
+  announced: boolean;
+}
+
+/**
+ * The monitor sees the renegotiated contract on track again: its renegotiations nobody finished deciding are
+ * withdrawn (status `cancelled`, audited as the app). A lead that already approved an option is named in the
+ * audit; an option approved by both teams (`approved`) is no longer undecided and goes ahead.
+ */
+export async function cancelRenegotiationsBackOnTrack(
+  deps: NegotiationDeps,
+  parent: DependencyRequest,
+  contractId: number,
+): Promise<BackOnTrackCancellation> {
+  const result: BackOnTrackCancellation = { cancelled: [], announced: false };
+  for (const requestId of await deps.store.undecidedRenegotiations(parent.providerTeamId, contractId)) {
+    if (!(await deps.store.transition(requestId, ['negotiating', 'awaiting-approval'], 'cancelled'))) continue;
+    const approvals = (await deps.store.listApprovals(requestId)).filter((approval) => approval.decision === 'approve');
+    const approvedBy = await Promise.all(
+      approvals.map(async (approval) => ({
+        teamId: approval.teamId,
+        accountId: approval.actorAccountId,
+        name: await deps.jira.displayName(approval.actorAccountId).catch(() => null),
+      })),
+    );
+    await deps.store.audit('request', requestId, 'renegotiation-cancelled', null, {
+      reason: BACK_ON_TRACK_REASON,
+      parentRequestId: parent.id,
+      contractId,
+      approvedBy,
+      as: 'app',
+      actorReason: BACK_ON_TRACK_ACTOR_REASON,
+    });
+    result.cancelled.push(requestId);
+    if (await deps.store.hasStep(requestId, renegotiationCommentStep(parent.sourceIssueKey))) result.announced = true;
+  }
+  return result;
 }
 
 export const ESCALATED_STEP = 'escalated';

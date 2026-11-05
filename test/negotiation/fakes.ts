@@ -177,6 +177,9 @@ export class MemoryStore implements NegotiationStore {
   async hasStep(requestId: string, step: string) {
     return this.auditLog.some((e) => e.entityType === 'request' && e.entityId === requestId && e.action === step);
   }
+  async hasContractStep(contractId: number, step: string) {
+    return this.auditLog.some((e) => e.entityType === 'contract' && e.entityId === String(contractId) && e.action === step);
+  }
   async lastStepAgeSeconds(requestId: string, step?: string) {
     const times = this.auditLog
       .filter((e) => e.entityType === 'request' && e.entityId === requestId && (!step || e.action === step))
@@ -208,10 +211,11 @@ export class MemoryStore implements NegotiationStore {
       )?.requestId ?? null
     );
   }
-  async undecidedRenegotiations(providerTeamId: string) {
+  async undecidedRenegotiations(providerTeamId: string, contractId?: number) {
     return this.renegotiations
       .filter((r) => {
         const found = this.requests.get(r.requestId);
+        if (contractId !== undefined && r.contractId !== contractId) return false;
         return found?.providerTeamId === providerTeamId && ['negotiating', 'awaiting-approval'].includes(found.status);
       })
       .map((r) => r.requestId);

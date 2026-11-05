@@ -7,6 +7,7 @@ import { createRequest, decide, NegotiationError, normalizeTitle, retryRequest, 
 import {
   approvalsByRequest,
   auditFor,
+  lastDemoClean,
   contractsForRequests,
   listContracts,
   listEdges,
@@ -18,7 +19,7 @@ import {
   requestsForIssue,
   requestsForTeams,
 } from '../negotiation/store';
-import { toAuditRow, type AuditRow } from '../negotiation/audit-view';
+import { auditTimeline, toAuditRow, type AuditRow } from '../negotiation/audit-view';
 import { buildDealSheet, redact, summarize, type SummaryExtras } from '../negotiation/views';
 import { KIND_LABEL, type Side } from '../negotiation/delegates';
 import type { Principal } from '../atlassian/http';
@@ -710,7 +711,10 @@ export async function auditTrail(accountId: string | undefined): Promise<AuditRo
   for (const { contract, request } of await contractsForRequests([...titles.keys()])) {
     contractTitles.set(String(contract.id), request.title);
   }
-  const entries = await auditFor([...titles.keys()], [...contractTitles.keys()].map(Number), 50);
+  // A demo clean starts the trail over: older entries stay in audit_log but are hidden here.
+  const cleaned = await lastDemoClean();
+  const recent = await auditFor([...titles.keys()], [...contractTitles.keys()].map(Number), 50, cleaned?.id ?? null);
+  const entries = auditTimeline(recent, cleaned, 50);
   const approvedIds = entries.filter((entry) => entry.action === 'approved').map((entry) => Number(approvedOptionId(entry.payload)));
   const options = await optionsByIds(approvedIds);
   const approverIds = new Set([...approvers.values()].flat());
@@ -719,7 +723,9 @@ export async function auditTrail(accountId: string | undefined): Promise<AuditRo
       viewerAccountId: accountId,
       approverIds,
       subjectOf: (item) =>
-        (item.entityType === 'contract' ? contractTitles.get(item.entityId) : titles.get(item.entityId)) ?? 'Unknown request',
+        item.entityType === 'demo'
+          ? 'Demo data'
+          : ((item.entityType === 'contract' ? contractTitles.get(item.entityId) : titles.get(item.entityId)) ?? 'Unknown request'),
       optionLabel: (optionId) => {
         const option = options.get(optionId);
         if (!option) return null;

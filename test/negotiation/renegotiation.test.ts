@@ -114,6 +114,53 @@ describe('openRenegotiation (FR-14)', () => {
     expect(h.store.auditLog.filter((e) => e.action === 'contract-superseded')).toHaveLength(1);
   });
 
+  it('tells a reused deliverable apart from a created one in the result, comment, audit and deal sheet', async () => {
+    const h = harness({ commitments: shiftScenario() });
+    const input = await trigger(h);
+    const sheetOf = async (requestId: string) =>
+      buildDealSheet({
+        store: h.store,
+        request: (await h.store.getRequest(requestId))!,
+        requester: MOB,
+        provider: PAY,
+        viewerSides: [],
+        visibleKeys: async () => null,
+        sameApproverAllowed: false,
+        canRetry: false,
+      });
+    expect((await sheetOf(REQUEST_ID)).appliedChanges.slice(0, 2).map((c) => c.text)).toEqual([
+      expect.stringMatching(/^Created PAY-100 /),
+      'Linked PAY-100 as blocking MOB-7.',
+    ]);
+
+    await openRenegotiation(h.deps, input, RENEGOTIATION_ID);
+    await runRound1(h.deps, RENEGOTIATION_ID);
+    await runRound2(h.deps, RENEGOTIATION_ID);
+    const preview = (await sheetOf(RENEGOTIATION_ID)).options[0].jiraChanges.map((c) => c.text);
+    expect(preview[0]).toMatch(/^Keep the existing PAY-100 and move its due date to /);
+    expect(preview.join(' ')).not.toContain('Create a Story');
+
+    await approveBest(h, RENEGOTIATION_ID);
+    const result = await applyContract(h.deps, RENEGOTIATION_ID);
+    expect(result.detail).toContain('linked existing PAY-100 (blocks link already there)');
+    const contractComments = h.jira.comments.filter((c) => c.text.startsWith('Accord contract') && c.text.includes('replaces'));
+    expect(contractComments.map((c) => c.issueKey).sort()).toEqual(['MOB-7', 'PAY-100']);
+    for (const comment of contractComments) {
+      expect(comment.text).toContain('Linked existing PAY-100 in PAY.');
+      expect(comment.text).not.toContain('Created');
+    }
+    // The original contract created the deliverable and says so with the panel's wording.
+    const original = h.jira.comments.filter((c) => c.text.startsWith('Accord contract') && !c.text.includes('replaces'));
+    expect(original.length).toBeGreaterThan(0);
+    for (const comment of original) expect(comment.text).toContain('Created PAY-100 in PAY.');
+    const applied = h.store.auditLog.filter((e) => e.action === 'contract-applied').at(-1);
+    expect(applied?.payload).toMatchObject({ deliverable: 'PAY-100', deliverableCreated: false, linkCreated: false });
+    const changes = (await sheetOf(RENEGOTIATION_ID)).appliedChanges.map((c) => c.text);
+    expect(changes[0]).toMatch(/^Linked existing PAY-100 "Refund API" in PAY and moved its due date to /);
+    expect(changes[1]).toBe('PAY-100 already blocked MOB-7; no new link.');
+    expect(changes.join(' ')).not.toContain('Created');
+  });
+
   it('the deal sheet explains the contract it renegotiates, with numbers from the data (FR-14)', async () => {
     const h = harness({ commitments: shiftScenario() });
     const input = await trigger(h);

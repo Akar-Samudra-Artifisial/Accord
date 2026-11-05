@@ -99,6 +99,9 @@ export interface Renegotiation {
 /** Statuses of a renegotiation that still block opening another one for the same contract. */
 export const OPEN_RENEGOTIATION_STATUSES: readonly RequestStatus[] = ['negotiating', 'awaiting-approval', 'approved'];
 
+/** Audit step (entity `contract`) written when apply-contract created the blocks link itself. */
+export const LINK_CREATED_STEP = 'link-created';
+
 /** Requests that block a duplicate for the same source issue and provider. */
 export const OPEN_REQUEST_STATUSES: readonly RequestStatus[] = ['negotiating', 'awaiting-approval'];
 
@@ -164,6 +167,8 @@ export interface NegotiationStore {
   ensureEdge(contractId: number, fromTeamId: string, toTeamId: string): Promise<void>;
   /** Step markers stored in audit_log (entity `request`), used for idempotent side effects. */
   hasStep(requestId: string, step: string): Promise<boolean>;
+  /** Same for markers of a contract (entity `contract`), e.g. LINK_CREATED_STEP. */
+  hasContractStep(contractId: number, step: string): Promise<boolean>;
   /** Seconds since the latest audit entry of the request (optionally only `step`); null when none. */
   lastStepAgeSeconds(requestId: string, step?: string): Promise<number | null>;
   audit(entityType: string, entityId: string, action: string, actor: string | null, payload: unknown): Promise<void>;
@@ -177,8 +182,11 @@ export interface NegotiationStore {
   getRenegotiation(requestId: string): Promise<Renegotiation | null>;
   /** Request id of a renegotiation of `contractId` in OPEN_RENEGOTIATION_STATUSES, else null. */
   openRenegotiationFor(contractId: number): Promise<string | null>;
-  /** Renegotiations with provider `providerTeamId` that are still negotiating or awaiting approval. */
-  undecidedRenegotiations(providerTeamId: string): Promise<string[]>;
+  /**
+   * Renegotiations with provider `providerTeamId` that are still negotiating or awaiting approval;
+   * with `contractId` only those opened for that contract.
+   */
+  undecidedRenegotiations(providerTeamId: string, contractId?: number): Promise<string[]>;
 }
 
 /** Person a request without agreement is escalated to (FR-15). */

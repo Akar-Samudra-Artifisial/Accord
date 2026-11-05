@@ -181,15 +181,25 @@ export function previewChanges(
   request: Pick<DependencyRequest, 'title' | 'sourceIssueKey'>,
   providerProjectKey: string,
   option: StoredOption,
+  /** Renegotiation: the deliverable of the replaced contract, which is kept instead of creating a new issue. */
+  existingDeliverable: string | null = null,
 ): JiraChange[] {
   if (option.kind === 'reject') return [];
-  const changes: JiraChange[] = [
-    {
-      kind: 'create-issue',
-      text: `Create a Story "${request.title}" in project ${providerProjectKey}, due ${formatDate(option.dateRange.max)}, labelled accord.`,
-    },
-    { kind: 'link', text: `Link the new issue as blocking ${request.sourceIssueKey}.` },
-  ];
+  const changes: JiraChange[] = existingDeliverable
+    ? [
+        {
+          kind: 'create-issue',
+          text: `Keep the existing ${existingDeliverable} and move its due date to ${formatDate(option.dateRange.max)}.`,
+        },
+        { kind: 'link', text: `Link ${existingDeliverable} as blocking ${request.sourceIssueKey} unless it already blocks it.` },
+      ]
+    : [
+        {
+          kind: 'create-issue',
+          text: `Create a Story "${request.title}" in project ${providerProjectKey}, due ${formatDate(option.dateRange.max)}, labelled accord.`,
+        },
+        { kind: 'link', text: `Link the new issue as blocking ${request.sourceIssueKey}.` },
+      ];
   const shiftSteps = option.trace.filter((step) => step.step === 'shift');
   for (const item of option.shifted) {
     const step = shiftSteps.find((candidate) => candidate.values.key === item.key);
@@ -202,7 +212,7 @@ export function previewChanges(
   }
   changes.push({
     kind: 'comment',
-    text: `Comment on ${request.sourceIssueKey} and on the new issue with the agreed dates ${formatDateRange(option.dateRange.min, option.dateRange.max)}.`,
+    text: `Comment on ${request.sourceIssueKey} and on ${existingDeliverable ?? 'the new issue'} with the agreed dates ${formatDateRange(option.dateRange.min, option.dateRange.max)}.`,
   });
   return changes;
 }
