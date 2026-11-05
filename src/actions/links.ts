@@ -23,13 +23,17 @@ export function siteLinks(baseUrl: string): SiteLinks {
   };
 }
 
-/** A contract links to its deliverable issue (or the source issue while there is none). */
+/**
+ * A contract links to its deliverable issue (or the source issue while there is none).
+ * A key the viewer may not see is null (redacted), and so is its link.
+ */
 export function contractLinks(
   links: SiteLinks,
-  contract: { sourceIssueKey: string; deliverableIssueKey: string | null },
-): { url: string; sourceIssueUrl: string; deliverableIssueUrl: string | null } {
+  contract: { sourceIssueKey: string | null; deliverableIssueKey: string | null },
+): { url: string | null; sourceIssueUrl: string | null; deliverableIssueUrl: string | null } {
   const deliverableIssueUrl = contract.deliverableIssueKey ? links.issue(contract.deliverableIssueKey) : null;
-  return { url: deliverableIssueUrl ?? links.issue(contract.sourceIssueKey), sourceIssueUrl: links.issue(contract.sourceIssueKey), deliverableIssueUrl };
+  const sourceIssueUrl = contract.sourceIssueKey ? links.issue(contract.sourceIssueKey) : null;
+  return { url: deliverableIssueUrl ?? sourceIssueUrl, sourceIssueUrl, deliverableIssueUrl };
 }
 
 /** A request lives in the deal sheet on its source issue. */

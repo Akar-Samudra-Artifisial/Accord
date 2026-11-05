@@ -40,14 +40,25 @@ export interface TeamRef {
 }
 
 export interface ActionServices {
-  /** All teams registered in Accord (keys and names only). */
-  teams(): Promise<TeamRef[]>;
+  /** Teams registered in Accord whose Jira project the viewer can browse (keys and names only). */
+  teams(viewer: Viewer): Promise<TeamRef[]>;
   teamCharter(teamKey: string, viewer: Viewer): Promise<unknown>;
   teamCapacity(teamKey: string, viewer: Viewer): Promise<unknown>;
   request(requestId: string, viewer: Viewer): Promise<unknown>;
   evaluateOptions(requestId: string, earlierMinDays: number | undefined, viewer: Viewer): Promise<unknown>;
   contracts(teamKey: string | undefined, viewer: Viewer): Promise<unknown>;
   createRequest(input: CreateRequestInput, viewer: Viewer): Promise<unknown>;
+  /** What createRequest would create (resolved teams, title, dates); creates nothing. */
+  previewRequest(input: CreateRequestInput, viewer: Viewer): Promise<unknown>;
+}
+
+/**
+ * `confirm` of create-dependency-request: only boolean `true` (or the string "true" some clients send)
+ * creates; anything else returns the preview.
+ */
+export function isConfirmed(payload: ActionPayload): boolean {
+  const value = payload.confirm;
+  return value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true');
 }
 
 export interface ActionError {
@@ -177,25 +188,26 @@ async function guarded(operation: string, work: () => Promise<unknown>): Promise
 /** Builds the action handlers; Rovo entry points pass `viewerFromContext(context)`, the diag trigger an app viewer. */
 export function createActionHandlers(services: ActionServices) {
   /** Resolves a team reference against the registered teams, then runs `work` with the Accord key. */
-  const withTeam = (operation: string, ref: string, inputName: string, work: (teamKey: string) => Promise<unknown>) =>
+  const withTeam = (operation: string, viewer: Viewer, ref: string, inputName: string, work: (teamKey: string) => Promise<unknown>) =>
     guarded(operation, async () => {
-      const resolved = resolveTeamRef(ref, await services.teams(), inputName);
+      // Teams the viewer cannot browse are unknown to them, also in the "valid teams" hint.
+      const resolved = resolveTeamRef(ref, await services.teams(viewer), inputName);
       return resolved.ok ? work(resolved.value) : ({ error: resolved.error } satisfies ActionError);
     });
 
   return {
-    async listTeams() {
-      return guarded('listTeams', async () => ({ teams: await services.teams() }));
+    async listTeams(viewer: Viewer) {
+      return guarded('listTeams', async () => ({ teams: await services.teams(viewer) }));
     },
     async getTeamCharter(payload: ActionPayload, viewer: Viewer) {
       const teamKey = parseTeamRef(payload, 'teamKey', true);
       if (!teamKey.ok) return { error: teamKey.error };
-      return withTeam('getTeamCharter', teamKey.value as string, 'teamKey', (key) => services.teamCharter(key, viewer));
+      return withTeam('getTeamCharter', viewer, teamKey.value as string, 'teamKey', (key) => services.teamCharter(key, viewer));
     },
     async getTeamCapacity(payload: ActionPayload, viewer: Viewer) {
       const teamKey = parseTeamRef(payload, 'teamKey', true);
       if (!teamKey.ok) return { error: teamKey.error };
-      return withTeam('getTeamCapacity', teamKey.value as string, 'teamKey', (key) => services.teamCapacity(key, viewer));
+      return withTeam('getTeamCapacity', viewer, teamKey.value as string, 'teamKey', (key) => services.teamCapacity(key, viewer));
     },
     async getRequest(payload: ActionPayload, viewer: Viewer) {
       const requestId = parseRequestId(payload);
@@ -213,13 +225,15 @@ export function createActionHandlers(services: ActionServices) {
       const teamKey = parseTeamRef(payload, 'teamKey', false);
       if (!teamKey.ok) return { error: teamKey.error };
       if (teamKey.value === undefined) return guarded('listContracts', () => services.contracts(undefined, viewer));
-      return withTeam('listContracts', teamKey.value, 'teamKey', (key) => services.contracts(key, viewer));
+      return withTeam('listContracts', viewer, teamKey.value, 'teamKey', (key) => services.contracts(key, viewer));
     },
+    /** Without `confirm: true` only a preview is returned; nothing is created (MCP clients call it twice). */
     async createDependencyRequest(payload: ActionPayload, viewer: Viewer) {
       const input = parseCreateInput(payload);
       if (!input.ok) return { error: input.error };
-      return withTeam('createDependencyRequest', input.value.providerTeamKey, 'providerTeamKey', (providerTeamKey) =>
-        services.createRequest({ ...input.value, providerTeamKey }, viewer),
+      const confirmed = isConfirmed(payload);
+      return withTeam('createDependencyRequest', viewer, input.value.providerTeamKey, 'providerTeamKey', (providerTeamKey) =>
+        confirmed ? services.createRequest({ ...input.value, providerTeamKey }, viewer) : services.previewRequest({ ...input.value, providerTeamKey }, viewer),
       );
     },
   };

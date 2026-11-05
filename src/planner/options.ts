@@ -50,6 +50,8 @@ interface Context {
   capR: number;
   baseTrace: TraceStep[];
   shareRule: string;
+  /** Issues ahead under the monitor rule (input.workAhead), undefined without it. */
+  ahead: number | undefined;
 }
 
 type Draft = Omit<PlannerOption, 'recommended' | 'consequences'>;
@@ -70,6 +72,9 @@ function validateInput(input: PlannerInput): void {
   }
   if (request.minSize !== undefined && !(Number.isInteger(request.minSize) && request.minSize >= 1)) {
     throw new Error(`Invalid request minSize ${request.minSize}: expected a positive integer`);
+  }
+  if (input.workAhead && !(Number.isInteger(input.workAhead.issues) && input.workAhead.issues >= 0)) {
+    throw new Error(`Invalid workAhead issues ${input.workAhead.issues}: expected a non-negative integer`);
   }
   if (input.variation && !(Number.isInteger(input.variation.days) && input.variation.days > 0)) {
     throw new Error(`Invalid variation days ${input.variation.days}: expected a positive integer`);
@@ -148,11 +153,35 @@ function sumUsable(committed: readonly number[], base: number, cap: number, limi
   return total;
 }
 
-function rangeFor(ctx: Context, committed: readonly number[], amount: number, limit: number): DateRange | undefined {
+/**
+ * Contract monitor rule: index of the first sprint (of the first `limit`) whose cumulative `throughput`
+ * covers `issues` worked through in order, or -1.
+ */
+export function sequentialFinishIndex(throughput: number, issues: number, limit: number): number {
+  if (!(throughput > 0)) return -1;
+  for (let i = 0; i < limit; i += 1) if (throughput * (i + 1) >= issues) return i;
+  return -1;
+}
+
+function rangeFor(
+  ctx: Context,
+  committed: readonly number[],
+  amount: number,
+  limit: number,
+  ahead: number | undefined = ctx.ahead,
+): DateRange | undefined {
   const { capacity } = ctx.input;
-  const pIndex = reachIndex(committed, capacity.pessimistic, ctx.capP, amount, limit);
+  let pIndex = reachIndex(committed, capacity.pessimistic, ctx.capP, amount, limit);
   if (pIndex < 0) return undefined;
-  const rIndex = reachIndex(committed, capacity.realistic, ctx.capR, amount, limit);
+  let rIndex = reachIndex(committed, capacity.realistic, ctx.capR, amount, limit);
+  if (ahead !== undefined) {
+    // Never earlier than the monitor projects the work ahead plus this request.
+    const floorP = sequentialFinishIndex(capacity.pessimistic, ahead + amount, limit);
+    if (floorP < 0) return undefined;
+    pIndex = Math.max(pIndex, floorP);
+    const floorR = sequentialFinishIndex(capacity.realistic, ahead + amount, limit);
+    if (rIndex >= 0) rIndex = Math.max(rIndex, floorR >= 0 ? floorR : pIndex);
+  }
   const minIndex = rIndex >= 0 && rIndex < pIndex ? rIndex : pIndex;
   return { min: ctx.slots[minIndex].sprint.endDate, max: ctx.slots[pIndex].sprint.endDate };
 }
@@ -191,8 +220,10 @@ function shiftOption(ctx: Context, limit: number): ShiftOutcome {
   const { charter, capacity } = ctx.input;
   const candidates: { item: WorkItem; slotIndex: number; rule: string }[] = [];
   const kept: { item: WorkItem; slotIndex: number; rule: string }[] = [];
+  const pinned = new Set(ctx.input.workAhead?.pinnedKeys ?? []);
   for (let i = 0; i < limit; i += 1) {
     for (const item of ctx.slots[i].items) {
+      if (pinned.has(item.key)) continue;
       const shiftRule = firstMatchingRule(item, charter.shiftable);
       if (!shiftRule) continue;
       const redLine = firstMatchingRule(item, charter.redLines);
@@ -210,11 +241,16 @@ function shiftOption(ctx: Context, limit: number): ShiftOutcome {
   const committed = [...ctx.committed];
   const moves: { item: WorkItem; from: number; to: number; rule: string }[] = [];
   const base = capacity.pessimistic;
+  const counted = new Set(ctx.input.workAhead?.countedKeys ?? []);
+  const countedSprints = new Set(ctx.input.workAhead?.countedSprintIds ?? []);
+  let ahead = ctx.ahead;
+  const fits = () =>
+    sumUsable(committed, base, ctx.capP, limit) >= ctx.requested &&
+    (ahead === undefined || sequentialFinishIndex(base, ahead + ctx.requested, limit) >= 0);
   for (const candidate of candidates) {
-    if (sumUsable(committed, base, ctx.capP, limit) >= ctx.requested) break;
+    if (fits()) break;
     const size = itemSize(candidate.item);
     const from = candidate.slotIndex;
-    if (usable(base, ctx.capP, committed[from] - size) <= usable(base, ctx.capP, committed[from])) continue;
     let to = -1;
     for (let t = limit; t < ctx.slots.length; t += 1) {
       if (base - committed[t] >= size) {
@@ -223,16 +259,21 @@ function shiftOption(ctx: Context, limit: number): ShiftOutcome {
       }
     }
     if (to < 0) continue;
+    const freesRoom = usable(base, ctx.capP, committed[from] - size) > usable(base, ctx.capP, committed[from]);
+    // Under the monitor rule a move helps when the issue leaves the counted sprints.
+    const lowersAhead = ahead !== undefined && counted.has(candidate.item.key) && !countedSprints.has(ctx.slots[to].sprint.id);
+    if (!freesRoom && !lowersAhead) continue;
     committed[from] -= size;
     committed[to] += size;
+    if (lowersAhead && ahead !== undefined) ahead -= size;
     moves.push({ item: candidate.item, from, to, rule: candidate.rule });
   }
 
   const redLineBlocked = kept.length > 0;
-  if (moves.length === 0 || sumUsable(committed, base, ctx.capP, limit) < ctx.requested) {
+  if (moves.length === 0 || !fits()) {
     return { redLineBlocked, redLineRules };
   }
-  const range = rangeFor(ctx, committed, ctx.requested, limit);
+  const range = rangeFor(ctx, committed, ctx.requested, limit, ahead);
   if (!range) return { redLineBlocked, redLineRules };
 
   const shifted: ShiftedItem[] = moves.map((m) => ({
@@ -413,6 +454,16 @@ export function planOptions(input: PlannerInput): PlannerResult {
   if (variation) {
     baseTrace.push(makeStep('variation', { days: variation.days, neededByMin }));
   }
+  if (input.workAhead) {
+    const index = sequentialFinishIndex(capacity.pessimistic, input.workAhead.issues + requested, slots.length);
+    baseTrace.push(
+      makeStep('work-ahead', {
+        aheadIssues: input.workAhead.issues,
+        pessimistic: capacity.pessimistic,
+        aheadDate: index >= 0 ? slots[index].sprint.endDate : 'beyond the planning horizon',
+      }),
+    );
+  }
   baseTrace.push(
     makeStep(
       'room-before-need',
@@ -421,7 +472,7 @@ export function planOptions(input: PlannerInput): PlannerResult {
     ),
   );
 
-  const ctx: Context = { input, slots, committed, requested, neededBy, capP, capR, baseTrace, shareRule };
+  const ctx: Context = { input, slots, committed, requested, neededBy, capP, capR, baseTrace, shareRule, ahead: input.workAhead?.issues };
   const drafts: Draft[] = [];
   const onTime = onTimeOption(ctx, limit);
   if (onTime) {

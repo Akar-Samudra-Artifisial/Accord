@@ -75,6 +75,13 @@ class FakeBugPort implements DemoBugPort {
       input: this.projection(),
     };
   }
+  /** Renegotiations per provider project, cancelled by reset. */
+  renegotiations: Array<{ projectKey: string; requestId: string; status: string }> = [];
+  async cancelRenegotiations(projectKey: string) {
+    const cancelled = this.renegotiations.filter((r) => r.projectKey === projectKey && ['negotiating', 'awaiting-approval'].includes(r.status));
+    for (const item of cancelled) item.status = 'cancelled';
+    return cancelled.map((r) => r.requestId);
+  }
   async moveToSprint(sprintId: number, keys: readonly string[]) {
     for (const issue of this.issues) if (keys.includes(issue.key)) issue.sprint = sprintId;
   }
@@ -179,5 +186,17 @@ describe('demo critical bugs', () => {
     expect(again.created).toEqual([]);
     expect(again.added).toEqual(['PAY-300', 'PAY-301', 'PAY-302', 'PAY-303']);
     expect(port.issues.every((i) => i.sprint === SPRINT.id)).toBe(true);
+  });
+
+  it('reset cancels the undecided renegotiation the bugs opened and audits it (FR-14)', async () => {
+    await addDemoBugs(port, 'PAY', 'lead');
+    port.renegotiations.push(
+      { projectKey: 'PAY', requestId: 'req-open', status: 'awaiting-approval' },
+      { projectKey: 'PAY', requestId: 'req-done', status: 'contracted' },
+    );
+    const reset = await resetDemoBugs(port, 'PAY', 'lead');
+    expect(reset.cancelledRenegotiations).toEqual(['req-open']);
+    expect(port.renegotiations.map((r) => r.status)).toEqual(['cancelled', 'contracted']);
+    expect(port.auditLog.find((e) => e.action === 'demo-bugs-reset')?.payload).toMatchObject({ cancelledRenegotiations: ['req-open'] });
   });
 });

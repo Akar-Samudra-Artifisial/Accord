@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ForgeReconciler, {
+  Box,
   Button,
   ButtonGroup,
   Checkbox,
   DynamicTable,
+  Heading,
   Inline,
   Link,
   Lozenge,
@@ -22,11 +24,13 @@ import ForgeReconciler, {
   Tabs,
   Text,
   Textfield,
+  Tooltip,
+  xcss,
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
 import { formatDate, formatDateRange, formatDateTime } from '../format/dates';
 import { plural } from '../format/text';
-import { DealSheetModal, StatusLozenge, type RequestStatus } from './dealsheet';
+import { DealSheetModal, EscalatedLozenge, RenegotiationLozenge, StatusLozenge, STATUS_LABEL, type RequestStatus } from './dealsheet';
 import { changedKey, contractIsMoving, contractSignature, requestIsMoving, useBoundedPolling, useIdlePolling } from './polling';
 
 type Failure = { ok: false; error: string };
@@ -475,6 +479,8 @@ interface RequestSummary {
   requester: string;
   provider: string;
   pendingFor: Array<'requester' | 'provider'>;
+  renegotiation: boolean;
+  escalatedTo: string[];
 }
 
 /** Shared props of the live tabs: whether the tab is shown and when the user last interacted. */
@@ -483,30 +489,47 @@ interface LiveTabProps {
   lastActivityAt: number;
 }
 
-const InboxTab = ({ onChanged, active, lastActivityAt }: LiveTabProps & { onChanged: () => void }) => {
+/**
+ * `watch` increases after a decision or a demo action: the Inbox then polls until its list changes (the
+ * monitor may open a renegotiation), and also while an at-risk contract still waits for its renegotiation.
+ */
+const InboxTab = ({ onChanged, active, lastActivityAt, watch }: LiveTabProps & { onChanged: () => void; watch: number }) => {
   const [items, setItems] = useState<RequestSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const [awaiting, setAwaiting] = useState(0);
+  const [itemsKey, setItemsKey] = useState<string | null>(null);
+  const [baseline, setBaseline] = useState<string | null>(null);
   const shownKey = useRef<string | null>(null);
 
   const load = useCallback(async () => {
-    const result = await call<{ items: RequestSummary[] }>('getInbox');
+    const result = await call<{ items: RequestSummary[]; awaitingRenegotiation?: number }>('getInbox');
     if (result.ok) {
       // Same data → no state change, so background refreshes do not flicker.
       const key = changedKey(shownKey.current, result.items);
       if (key !== null) {
         shownKey.current = key;
         setItems(result.items);
+        setItemsKey(key);
       }
+      setAwaiting(result.awaitingRenegotiation ?? 0);
       setError(null);
     } else setError(result.error);
   }, []);
 
-  // "Approved, updating Jira" and "Negotiating" settle in the background queue.
-  const moving = items?.some((item) => requestIsMoving(item.status)) ?? false;
+  // "Approved, updating Jira" and "Negotiating" settle in the background queue; an at-risk contract
+  // gets its renegotiation from the monitor queue.
+  const watching = baseline !== null && itemsKey === baseline;
+  const moving = (items?.some((item) => requestIsMoving(item.status)) ?? false) || awaiting > 0 || watching;
   const { polling, exhausted, restart } = useBoundedPolling(moving, load);
-  // New requests (e.g. created by the Delegate agent) appear without a manual Refresh.
-  useIdlePolling(active && !moving, lastActivityAt, load);
+  useEffect(() => {
+    if (watch === 0) return;
+    setBaseline(shownKey.current ?? '');
+    restart();
+  }, [watch, restart]);
+  // New requests (e.g. created by the Delegate agent) appear without a manual Refresh; also after the
+  // fast polling budget is used up while something is still moving.
+  useIdlePolling(active && !polling, lastActivityAt, load);
   const refresh = useCallback(() => {
     restart();
     void load();
@@ -557,7 +580,10 @@ const InboxTab = ({ onChanged, active, lastActivityAt }: LiveTabProps & { onChan
               content: (
                 <Inline space="space.050" shouldWrap>
                   <StatusLozenge status={item.status} />
+                  {item.renegotiation ? <RenegotiationLozenge /> : null}
+                  {item.escalatedTo.length ? <EscalatedLozenge /> : null}
                   {item.pendingFor.length ? <Lozenge appearance="new">Your decision</Lozenge> : null}
+                  {item.escalatedTo.length ? <Text color="color.text.subtle">{`to ${item.escalatedTo.join(', ')}`}</Text> : null}
                 </Inline>
               ),
             },
@@ -590,20 +616,31 @@ interface ContractRow {
   title: string;
   requester: string;
   provider: string;
-  sourceIssueKey: string;
+  /** Null when the viewer cannot browse the issue (redacted). */
+  sourceIssueKey: string | null;
   deliverableIssueKey: string | null;
+  deliverableRestricted: boolean;
   agreedDateMin: string;
   agreedDateMax: string;
   projectedDate: string | null;
-  status: 'applying' | 'on-track' | 'at-risk' | 'unknown';
+  status: 'applying' | 'on-track' | 'at-risk' | 'unknown' | 'superseded';
+  /** This contract came out of a renegotiation (FR-14). */
+  renegotiation: boolean;
+  latestRenegotiation: { requestId: string; status: RequestStatus } | null;
+  supersededBy: { requestId: string; contractId: number; agreedDateMin: string; agreedDateMax: string } | null;
+  escalatedTo: string[];
 }
 
-const CONTRACT_STATUS: Record<ContractRow['status'], { text: string; appearance: 'inprogress' | 'success' | 'removed' | 'default' }> = {
+const CONTRACT_STATUS: Record<ContractRow['status'], { text: string; appearance: 'inprogress' | 'success' | 'removed' | 'default' | 'moved' }> = {
   applying: { text: 'Updating Jira', appearance: 'inprogress' },
   'on-track': { text: 'On track', appearance: 'success' },
   'at-risk': { text: 'At risk', appearance: 'removed' },
   unknown: { text: 'Not enough data', appearance: 'default' },
+  superseded: { text: 'Superseded', appearance: 'moved' },
 };
+
+/** Renegotiation still in progress for a contract (shown next to its status). */
+const OPEN_RENEGOTIATION: readonly RequestStatus[] = ['negotiating', 'awaiting-approval', 'approved'];
 
 interface DependencySummary {
   from: string;
@@ -618,6 +655,7 @@ interface DependencySummary {
  */
 const ContractsTab = ({ watch, active, lastActivityAt }: LiveTabProps & { watch: number }) => {
   const [rows, setRows] = useState<ContractRow[] | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
   const [dependencies, setDependencies] = useState<DependencySummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [baseline, setBaseline] = useState<string | null>(null);
@@ -694,7 +732,12 @@ const ContractsTab = ({ watch, active, lastActivityAt }: LiveTabProps & { watch:
           cells: [
             { key: 'contract', content: <Text>{row.title}</Text> },
             { key: 'teams', content: <Text>{`${row.requester} → ${row.provider}`}</Text> },
-            { key: 'issues', content: <Text>{`${row.deliverableIssueKey ?? 'pending'} blocks ${row.sourceIssueKey}`}</Text> },
+            {
+              key: 'issues',
+              content: (
+                <Text>{`${row.deliverableIssueKey ?? (row.deliverableRestricted ? 'Restricted' : 'pending')} blocks ${row.sourceIssueKey ?? 'Restricted'}`}</Text>
+              ),
+            },
             { key: 'agreed', content: <Text>{formatDateRange(row.agreedDateMin, row.agreedDateMax)}</Text> },
             {
               key: 'projected',
@@ -712,12 +755,43 @@ const ContractsTab = ({ watch, active, lastActivityAt }: LiveTabProps & { watch:
             },
             {
               key: 'status',
-              content: <Lozenge appearance={CONTRACT_STATUS[row.status].appearance}>{CONTRACT_STATUS[row.status].text}</Lozenge>,
+              content: (
+                <Stack space="space.050">
+                  <Inline space="space.050" shouldWrap>
+                    <Lozenge appearance={CONTRACT_STATUS[row.status].appearance}>{CONTRACT_STATUS[row.status].text}</Lozenge>
+                    {row.renegotiation ? <RenegotiationLozenge /> : null}
+                    {row.escalatedTo.length ? <EscalatedLozenge /> : null}
+                  </Inline>
+                  {row.supersededBy ? (
+                    <Button appearance="subtle" spacing="compact" onClick={() => setOpen(row.supersededBy?.requestId ?? null)}>
+                      {`Superseded by the contract agreed ${formatDateRange(row.supersededBy.agreedDateMin, row.supersededBy.agreedDateMax)}`}
+                    </Button>
+                  ) : null}
+                  {row.status !== 'superseded' && row.latestRenegotiation && OPEN_RENEGOTIATION.includes(row.latestRenegotiation.status) ? (
+                    <Button appearance="subtle" spacing="compact" onClick={() => setOpen(row.latestRenegotiation?.requestId ?? null)}>
+                      {`Renegotiation: ${STATUS_LABEL[row.latestRenegotiation.status].text.toLowerCase()}`}
+                    </Button>
+                  ) : null}
+                  {row.escalatedTo.length ? <Text color="color.text.subtle">{`Escalated to ${row.escalatedTo.join(', ')}`}</Text> : null}
+                </Stack>
+              ),
             },
           ],
         }))}
         emptyView={<Text>No contracts yet. A contract appears after both team leads approve a deal sheet.</Text>}
       />
+      <ModalTransition>
+        {open ? (
+          <DealSheetModal
+            requestId={open}
+            onChanged={refresh}
+            onClose={() => {
+              setOpen(null);
+              refresh();
+            }}
+          />
+        ) : null}
+      </ModalTransition>
       <DynamicTable
         caption="Dependencies between teams"
         head={{
@@ -741,6 +815,183 @@ const ContractsTab = ({ watch, active, lastActivityAt }: LiveTabProps & { watch:
           ],
         }))}
         emptyView={<Text>No dependencies recorded yet.</Text>}
+      />
+    </Stack>
+  );
+};
+
+type NetworkTeamStatus = Exclude<ContractRow['status'], 'superseded'> | 'none';
+
+interface NetworkTeam {
+  teamKey: string | null;
+  name: string;
+  worstStatus: NetworkTeamStatus;
+  contracts: number;
+  atRisk: number;
+  /** Renegotiations in progress; `renegotiationHistory` counts all ever opened. */
+  renegotiations: number;
+  renegotiationHistory: number;
+  escalations: number;
+}
+
+/** "1 open renegotiation, 0 escalations" with the full history in a tooltip. */
+const RenegotiationCounts = ({ open, history, escalations, tone }: { open: number; history: number; escalations: number; tone?: 'color.text.subtle' | 'color.text.subtlest' }) => (
+  <Tooltip content={`${plural(history, 'renegotiation')} opened in total`}>
+    <Text color={tone}>{`${plural(open, 'open renegotiation')}, ${plural(escalations, 'escalation')}`}</Text>
+  </Tooltip>
+);
+
+interface NetworkEdge {
+  contractId: number;
+  requestId: string;
+  title: string;
+  requester: string;
+  provider: string;
+  sourceIssueKey: string | null;
+  deliverableIssueKey: string | null;
+  deliverableRestricted: boolean;
+  agreedDateMin: string;
+  agreedDateMax: string;
+  projectedDate: string | null;
+  status: ContractRow['status'];
+  dimmed: boolean;
+  renegotiations: number;
+  renegotiationHistory: number;
+  escalations: number;
+}
+
+const TEAM_STATUS = (status: NetworkTeamStatus) =>
+  status === 'none' ? { text: 'No active contracts', appearance: 'default' as const } : CONTRACT_STATUS[status];
+
+const teamCardStyle = xcss({
+  borderColor: 'color.border',
+  borderStyle: 'solid',
+  borderWidth: 'border.width',
+  borderRadius: 'radius.medium',
+  padding: 'space.200',
+  minWidth: '220px',
+});
+
+const IssueLink = ({ issueKey }: { issueKey: string }) => (
+  <Link href={`/browse/${issueKey}`} openNewTab>
+    {issueKey}
+  </Link>
+);
+
+/** FR-17: teams with their worst contract status, and every visible contract as a requester → provider edge. */
+const NetworkTab = ({ active }: { active: boolean }) => {
+  const [map, setMap] = useState<{ teams: NetworkTeam[]; edges: NetworkEdge[] } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback(async () => {
+    setRefreshing(true);
+    const result = await call<{ map: { teams: NetworkTeam[]; edges: NetworkEdge[] } }>('getDependencyMap');
+    setRefreshing(false);
+    if (result.ok) {
+      setMap(result.map);
+      setError(null);
+    } else setError(result.error);
+  }, []);
+
+  // Reload each time the tab is selected.
+  useEffect(() => {
+    if (active || map === null) void load();
+  }, [active]);
+
+  if (error) {
+    return (
+      <SectionMessage appearance="error">
+        <Text>{error}</Text>
+      </SectionMessage>
+    );
+  }
+  if (!map) return <Spinner label="Loading dependency network" />;
+  return (
+    <Stack space="space.200">
+      <Inline space="space.100" alignBlock="center">
+        <Text>Teams linked by the contracts you can see. Superseded contracts are greyed out and do not count.</Text>
+        <Button isDisabled={refreshing} onClick={() => void load()}>
+          {refreshing ? 'Refreshing…' : 'Refresh'}
+        </Button>
+      </Inline>
+      {map.teams.length === 0 ? <Text>No dependencies recorded yet. Teams appear here once a contract is agreed.</Text> : null}
+      <Inline space="space.200" shouldWrap>
+        {map.teams.map((team) => (
+          <Box key={team.teamKey ?? team.name} xcss={teamCardStyle}>
+            <Stack space="space.100">
+              <Heading size="small">{team.name}</Heading>
+              <Lozenge appearance={TEAM_STATUS(team.worstStatus).appearance}>{TEAM_STATUS(team.worstStatus).text}</Lozenge>
+              <Text>{`${plural(team.contracts, 'active contract')}, ${team.atRisk} at risk`}</Text>
+              <RenegotiationCounts
+                open={team.renegotiations}
+                history={team.renegotiationHistory}
+                escalations={team.escalations}
+                tone="color.text.subtle"
+              />
+            </Stack>
+          </Box>
+        ))}
+      </Inline>
+      <DynamicTable
+        caption="Dependencies"
+        head={{
+          cells: [
+            { key: 'teams', content: 'Requester → provider' },
+            { key: 'deliverable', content: 'Deliverable' },
+            { key: 'status', content: 'Status' },
+            { key: 'agreed', content: 'Agreed dates' },
+            { key: 'projected', content: 'Projected' },
+            { key: 'history', content: 'Renegotiations' },
+          ],
+        }}
+        rows={map.edges.map((edge) => {
+          const tone = edge.dimmed ? 'color.text.subtlest' : undefined;
+          return {
+            key: String(edge.contractId),
+            cells: [
+              { key: 'teams', content: <Text color={tone}>{`${edge.requester} → ${edge.provider}`}</Text> },
+              {
+                key: 'deliverable',
+                content: (
+                  <Stack space="space.050">
+                    <Text color={tone}>{edge.title}</Text>
+                    <Inline space="space.050">
+                      {edge.deliverableIssueKey ? (
+                        <IssueLink issueKey={edge.deliverableIssueKey} />
+                      ) : (
+                        <Text color="color.text.subtle">{edge.deliverableRestricted ? 'Restricted' : 'pending'}</Text>
+                      )}
+                      <Text color="color.text.subtle">blocks</Text>
+                      {edge.sourceIssueKey ? <IssueLink issueKey={edge.sourceIssueKey} /> : <Text color="color.text.subtle">Restricted</Text>}
+                    </Inline>
+                  </Stack>
+                ),
+              },
+              {
+                key: 'status',
+                content: <Lozenge appearance={CONTRACT_STATUS[edge.status].appearance}>{CONTRACT_STATUS[edge.status].text}</Lozenge>,
+              },
+              { key: 'agreed', content: <Text color={tone}>{formatDateRange(edge.agreedDateMin, edge.agreedDateMax)}</Text> },
+              { key: 'projected', content: <Text color={tone}>{edge.projectedDate ? formatDate(edge.projectedDate) : '—'}</Text> },
+              {
+                key: 'history',
+                content:
+                  edge.renegotiationHistory || edge.escalations ? (
+                    <RenegotiationCounts
+                      open={edge.renegotiations}
+                      history={edge.renegotiationHistory}
+                      escalations={edge.escalations}
+                      tone={edge.dimmed ? 'color.text.subtlest' : undefined}
+                    />
+                  ) : (
+                    <Text color={tone}>—</Text>
+                  ),
+              },
+            ],
+          };
+        })}
+        emptyView={<Text>No contracts to show.</Text>}
       />
     </Stack>
   );
@@ -863,15 +1114,19 @@ const App = () => {
         <TabList>
           <Tab>Inbox</Tab>
           <Tab>Contracts</Tab>
+          <Tab>Network</Tab>
           <Tab>Teams</Tab>
           <Tab>Audit</Tab>
           <Tab>Demo</Tab>
         </TabList>
         <TabPanel>
-          <InboxTab onChanged={watchContracts} active={tab === 0} lastActivityAt={lastActivityAt} />
+          <InboxTab onChanged={watchContracts} active={tab === 0} lastActivityAt={lastActivityAt} watch={watch} />
         </TabPanel>
         <TabPanel>
           <ContractsTab watch={watch} active={tab === 1} lastActivityAt={lastActivityAt} />
+        </TabPanel>
+        <TabPanel>
+          <NetworkTab active={tab === 2} />
         </TabPanel>
         <TabPanel>
           <TeamsTab teams={teams} reload={reload} />

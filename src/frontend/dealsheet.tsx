@@ -40,7 +40,7 @@ export async function call<T>(key: string, payload?: Record<string, unknown>): P
   }
 }
 
-export type RequestStatus = 'negotiating' | 'awaiting-approval' | 'approved' | 'contracted' | 'rejected' | 'failed';
+export type RequestStatus = 'negotiating' | 'awaiting-approval' | 'approved' | 'contracted' | 'rejected' | 'failed' | 'cancelled';
 
 export const STATUS_LABEL: Record<RequestStatus, { text: string; appearance: 'inprogress' | 'new' | 'moved' | 'success' | 'removed' }> = {
   negotiating: { text: 'Negotiating', appearance: 'inprogress' },
@@ -49,7 +49,12 @@ export const STATUS_LABEL: Record<RequestStatus, { text: string; appearance: 'in
   contracted: { text: 'Contracted', appearance: 'success' },
   rejected: { text: 'Rejected', appearance: 'removed' },
   failed: { text: 'Failed', appearance: 'removed' },
+  cancelled: { text: 'Cancelled', appearance: 'moved' },
 };
+
+/** FR-14 / FR-15 badges shared by the issue panel and the Inbox. */
+export const RenegotiationLozenge = () => <Lozenge appearance="new">Renegotiation</Lozenge>;
+export const EscalatedLozenge = () => <Lozenge appearance="removed" isBold>Escalated</Lozenge>;
 
 export const StatusLozenge = ({ status }: { status: RequestStatus }) => (
   <Lozenge appearance={STATUS_LABEL[status].appearance}>{STATUS_LABEL[status].text}</Lozenge>
@@ -93,6 +98,8 @@ interface DealSheet {
   contract: { optionId: number; deliverableIssueKey: string | null; agreedDateMin: string; agreedDateMax: string; status: string } | null;
   sideStatus: Record<Side, SideStatus>;
   appliedChanges: Array<{ kind: string; text: string; issueKeys: string[] }>;
+  /** Set for a renegotiation (FR-14): the replaced contract's agreed and projected dates. */
+  renegotiationContext: { text: string; issueKeys: string[] } | null;
 }
 
 interface DecisionResult {
@@ -415,6 +422,7 @@ export const DealSheetModal = ({
             <Stack space="space.075">
               <Inline space="space.100" alignBlock="center" shouldWrap>
                 <StatusLozenge status={sheet.request.status} />
+                {sheet.renegotiationContext ? <RenegotiationLozenge /> : null}
                 {sheet.sameApproverAllowed ? <Lozenge appearance="moved">Demo: same approver allowed</Lozenge> : null}
               </Inline>
               <LinkedText
@@ -424,6 +432,9 @@ export const DealSheetModal = ({
                 }
                 keys={[sheet.request.sourceIssueKey]}
               />
+              {sheet.renegotiationContext ? (
+                <LinkedText text={sheet.renegotiationContext.text} keys={sheet.renegotiationContext.issueKeys} />
+              ) : null}
               {sheet.options.length ? <SideStatusRow sheet={sheet} /> : null}
             </Stack>
 

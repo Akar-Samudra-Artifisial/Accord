@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const fake = vi.hoisted(() => ({ serverInfoCalls: 0, baseUrl: 'https://one-atlas-vyyd.atlassian.net' as unknown }));
+const fake = vi.hoisted(() => ({ serverInfoCalls: 0, baseUrl: 'https://one-atlas-vyyd.atlassian.net' as unknown, permissionChecks: [] as string[] }));
 
 vi.mock('@forge/api', () => ({
   default: {},
@@ -13,21 +13,44 @@ vi.mock('../../src/atlassian/http', async () => {
   const actual = await vi.importActual<typeof import('../../src/atlassian/http')>('../../src/atlassian/http');
   return {
     ...actual,
-    jira: vi.fn(async (path: string) => {
+    jira: vi.fn(async (path: string, options?: { as?: string }) => {
       if (path === '/rest/api/3/serverInfo') {
         fake.serverInfoCalls += 1;
         return { baseUrl: fake.baseUrl };
+      }
+      const browse = /^\/rest\/api\/3\/mypermissions\?projectKey=([A-Z]+)&permissions=BROWSE_PROJECTS$/.exec(path);
+      if (browse) {
+        fake.permissionChecks.push(`${browse[1]} as ${options?.as}`);
+        return { permissions: { BROWSE_PROJECTS: { havePermission: browse[1] !== 'ACSEC' } } };
       }
       throw new Error(`unexpected ${path}`);
     }),
   };
 });
+vi.mock('../../src/teams/repository', async () => ({
+  ...(await vi.importActual<typeof import('../../src/teams/repository')>('../../src/teams/repository')),
+  listTeams: vi.fn(async () =>
+    ['ACMOB', 'ACPAY', 'ACSEC'].map((key, i) => ({ id: `t-${i}`, teamKey: key, name: key, jiraProjectKey: key, boardId: i, leadAccountId: null, charterPageId: null })),
+  ),
+}));
 vi.mock('../../src/resolvers/negotiation', () => ({
   contracts: vi.fn(async () => [
     { contractId: 1, requestId: 'req-1', title: 'Refund API', sourceIssueKey: 'ACMOB-1', deliverableIssueKey: 'ACPAY-13', status: 'on-track' },
     { contractId: 2, requestId: 'req-2', title: 'Pending', sourceIssueKey: 'ACMOB-2', deliverableIssueKey: null, status: 'unknown' },
+    // Redacted: the viewer can browse neither issue key returned here.
+    { contractId: 3, requestId: 'req-4', title: 'Restricted', sourceIssueKey: null, deliverableIssueKey: null, deliverableRestricted: true, status: 'on-track' },
   ]),
   createRequestFromIssue: vi.fn(async () => ({ requestId: 'req-3', status: 'negotiating' })),
+  previewRequestFromIssue: vi.fn(async () => ({
+    sourceIssueKey: 'ACMOB-1',
+    requesterTeam: { teamKey: 'ACMOB', name: 'Mobile' },
+    providerTeam: { teamKey: 'ACPAY', name: 'Payments' },
+    title: 'Refund API',
+    size: 'S',
+    minSize: null,
+    neededBy: '2026-11-20',
+    costClass: 'standard',
+  })),
   dealSheet: vi.fn(),
   evaluateRequestOptions: vi.fn(),
 }));
@@ -71,6 +94,33 @@ describe('action outputs carry real URLs', () => {
       deliverableIssueUrl: `${SITE}/browse/ACPAY-13`,
     });
     expect(result.contracts[1]).toMatchObject({ url: `${SITE}/browse/ACMOB-2`, deliverableIssueUrl: null });
+    // Redacted keys get no links.
+    expect(result.contracts[2]).toMatchObject({ title: 'Restricted', url: null, sourceIssueUrl: null, deliverableIssueUrl: null });
+  });
+
+  it('list-teams returns only teams whose project the user can browse, checked as the user', async () => {
+    fake.permissionChecks.length = 0;
+    expect((await actionServices.teams(USER)).map((team) => team.teamKey)).toEqual(['ACMOB', 'ACPAY']);
+    expect(fake.permissionChecks.sort()).toEqual(['ACMOB as user', 'ACPAY as user', 'ACSEC as user']);
+    await expect(actionServices.teams({ accountId: undefined, as: 'user' })).rejects.toThrow(/signed-in/);
+  });
+
+  it('the create preview shows teams, title and dates and creates nothing', async () => {
+    const { createRequestFromIssue } = await import('../../src/resolvers/negotiation');
+    const before = vi.mocked(createRequestFromIssue).mock.calls.length;
+    const result = await actionServices.previewRequest(
+      { sourceIssueKey: 'ACMOB-1', providerTeamKey: 'ACPAY', title: '', size: 'S', minSize: null, neededBy: '2026-11-20', costClass: 'standard' },
+      USER,
+    );
+    expect(result).toMatchObject({
+      preview: true,
+      created: false,
+      requesterTeam: { teamKey: 'ACMOB' },
+      providerTeam: { teamKey: 'ACPAY' },
+      title: 'Refund API',
+      neededByDisplay: expect.any(String),
+    });
+    expect(vi.mocked(createRequestFromIssue).mock.calls.length).toBe(before);
   });
 
   it('create-dependency-request links the deal sheet on the source issue and caches the base URL', async () => {

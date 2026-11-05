@@ -331,12 +331,14 @@ async function ensureSprintsAndIssues(team: DemoTeam, context: SeedContext): Pro
 
 async function ensureCharter(team: DemoTeam, context: SeedContext): Promise<string> {
   const stored = await registeredDemoTeam(team, context);
+  // The Jira project lead approves (for projects the seed created, that is the account that ran it);
+  // never the caller of an existing project they do not lead. The same lead is the escalation contact (FR-15).
+  const lead = stored.leadAccountId ?? context.leadAccountId;
   const result = await createCharterPage(stored, {
     teamName: team.name,
     ...team.charter,
-    // The Jira project lead approves (for projects the seed created, that is the account that ran it);
-    // never the caller of an existing project they do not lead.
-    approverAccountIds: [stored.leadAccountId ?? context.leadAccountId].filter((id): id is string => Boolean(id)),
+    approverAccountIds: lead ? [lead] : [],
+    ...(lead ? { escalationAccountId: lead } : {}),
   });
   const status = result.charter?.valid ? 'Charter valid' : `missing: ${result.charter?.missingFields.join(', ')}`;
   return `${stored.jiraProjectKey}: page ${result.pageId} ${result.created ? 'created' : 'reused'} (${status})`;

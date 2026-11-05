@@ -12,7 +12,8 @@ See `Accord — Product Requirements Document (Codegeist 2026).md` for the full 
 
 ```
 manifest.yml            Forge modules: issue panel, global page, Confluence byline, queue consumer,
-                        daily scheduled trigger, Forge SQL, two Rovo agents, six Rovo actions
+                        daily scheduled trigger, Forge SQL, two Rovo agents, seven Rovo actions,
+                        one rovo:mcp module (four tools)
 src/index.ts            Function handler exports
 src/planner/            Pure, deterministic planner (no @forge imports): capacity, cost, options, explain
 src/sql/migrations.ts   Forge SQL schema (append-only migrations)
@@ -47,9 +48,12 @@ forge install         # pick a Jira + Confluence developer site
 
 ## Before production
 
-- Remove the `accord-dev-diag` web trigger, its `dev-diag` function from `manifest.yml`, and `src/diag/`. The web
-  trigger URL is public; until removal it answers 404 unless `ACCORD_DIAG_ENABLED=true`.
-- Unset the development-only variables: `forge variables unset -e <env> ACCORD_DIAG_ENABLED` and
+- Remove the `accord-dev-diag` web trigger, its `dev-diag` function from `manifest.yml`, and `src/diag/` (planned
+  for M7). The web trigger URL is public; until removal it answers 404 unless `ACCORD_DIAG_ENABLED=true` and the
+  request sends the header `x-accord-diag-key` matching the encrypted variable `ACCORD_DIAG_KEY` (compared
+  timing-safe).
+- Unset the development-only variables: `forge variables unset -e <env> ACCORD_DIAG_ENABLED`,
+  `forge variables unset -e <env> ACCORD_DIAG_KEY` and
   `forge variables unset -e <env> ACCORD_DEMO_ALLOW_SAME_APPROVER`. Never set `ACCORD_DEMO_ALLOW_SAME_APPROVER` in
   staging or production: without it, one account cannot approve for both teams (dual control).
 - Remove the seed-only scopes `manage:jira-project` and `manage:jira-configuration` (and `write:space:confluence`
@@ -57,9 +61,25 @@ forge install         # pick a Jira + Confluence developer site
   `write:board-scope:jira-software` stays (backlog moves during apply-contract). Run `forge install --upgrade`
   after changing scopes.
 
-Development only: `forge variables set -e development ACCORD_DIAG_ENABLED true` and
+Development only: `forge variables set -e development ACCORD_DIAG_ENABLED true`,
+`forge variables set --encrypt -e development ACCORD_DIAG_KEY "$(openssl rand -hex 32)"` (at least 32 characters;
+the development value is in the password manager, never in the repo) and
 `forge variables set -e development ACCORD_DEMO_ALLOW_SAME_APPROVER true` (single-account demo; the deal sheet shows
 "Demo mode: same approver allowed").
+
+## Accord tools over MCP (`rovo:mcp`, Preview)
+
+The `accord-mcp` module exposes four existing actions as tools: `list-teams`, `get-request`, `list-contracts` and
+`create-dependency-request`. They use the same handlers as the Rovo agents and run as the invoking user, so a user
+only sees what they may see in Jira. There is no approve tool: deal sheets are approved only in the Accord UI.
+
+- Rovo Studio custom agent: Ask Rovo → agent selector → Create agent → skip to manual step → Tools → Add tools →
+  Connected apps → Accord → pick the tools → Add → Publish.
+- External MCP client (Claude, Cursor, …): a site or org admin first enables the tools in Atlassian Administration →
+  Apps → Sites → _your site_ → Connected apps → Accord → Tools (off by default, set per site). Then add
+  `https://mcp.atlassian.com/forge/b3ad0126-cc44-4b56-94d0-dc7e24ba391e` as a remote HTTP MCP server, for example
+  `claude mcp add --transport http accord https://mcp.atlassian.com/forge/b3ad0126-cc44-4b56-94d0-dc7e24ba391e`.
+  Connecting opens an OAuth consent screen where the user picks the site.
 
 ## Planner rules (summary)
 

@@ -22,8 +22,11 @@ import {
   createRequestFromIssue,
   dealSheet,
   decideOnDealSheet,
+  dependencyMap,
   dependencySummary,
+  dismissLinkSuggestion,
   inbox,
+  awaitingRenegotiations,
   panelState,
   retryStalledRequest,
   type ResolverContext,
@@ -103,6 +106,14 @@ resolver.define(
   },
 );
 
+resolver.define('dismissSuggestion', async ({ payload, context }: { payload: Record<string, unknown>; context: RequestContext }) => {
+  try {
+    return { ok: true, ...(await dismissLinkSuggestion(payload, context.accountId)) };
+  } catch (error) {
+    return failure('dismissSuggestion', error);
+  }
+});
+
 resolver.define('getDealSheet', async ({ payload, context }: { payload: Record<string, unknown>; context: RequestContext }) => {
   try {
     return { ok: true, sheet: await dealSheet(payload, context.accountId) };
@@ -129,7 +140,8 @@ resolver.define('retryRequest', async ({ payload, context }: { payload: Record<s
 
 resolver.define('getInbox', async ({ context }: { context: RequestContext }) => {
   try {
-    return { ok: true, items: await inbox(context.accountId) };
+    const [items, awaitingRenegotiation] = await Promise.all([inbox(context.accountId), awaitingRenegotiations(context.accountId)]);
+    return { ok: true, items, awaitingRenegotiation };
   } catch (error) {
     return failure('getInbox', error);
   }
@@ -141,6 +153,14 @@ resolver.define('getContracts', async ({ context }: { context: RequestContext })
     return { ok: true, contracts: rows, dependencies: await dependencySummary(rows) };
   } catch (error) {
     return failure('getContracts', error);
+  }
+});
+
+resolver.define('getDependencyMap', async ({ context }: { context: RequestContext }) => {
+  try {
+    return { ok: true, map: await dependencyMap(context.accountId) };
+  } catch (error) {
+    return failure('getDependencyMap', error);
   }
 });
 

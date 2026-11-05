@@ -1,6 +1,7 @@
 /**
  * Development-only diagnostics web trigger (`accord-dev-diag`). Disabled unless the Forge
- * variable ACCORD_DIAG_ENABLED is `true` (set only in the development environment).
+ * variable ACCORD_DIAG_ENABLED is `true` (set only in the development environment), and every call
+ * must send the header `x-accord-diag-key` with the encrypted variable ACCORD_DIAG_KEY.
  * TODO(before production): remove this module, its manifest entry and the
  * `dev-diag` function. Never commit the web trigger URL.
  */
@@ -15,15 +16,15 @@ import { ensureCharterSpace, loadCommitments, teamCapacity } from '../teams/serv
 import { getCharter, getTeamByKey, getTeamByProjectKey, listTeams } from '../teams/repository';
 import { randomUUID } from 'node:crypto';
 import { productionDeps } from '../negotiation/deps';
-import { createRequest } from '../negotiation/orchestrator';
-import { requestsByStatus } from '../negotiation/store';
+import { createRequest, retryEscalations } from '../negotiation/orchestrator';
+import { pendingEscalations, requestsByStatus } from '../negotiation/store';
 import { deleteIssueLink, isBlocksFrom, ISSUE_KEY, linkBlocks, listIssueLinks, type IssueLink } from '../jira/issues';
 import type { CostClass, Size } from '../planner';
 import { executeSeedStep, existingDemoProjectKey, getSeedPlan, getSeedStatus, SEED_QUEUE_KEY, startSeed } from '../demo/seed';
 import { MIGRATIONS } from '../sql/migrations';
 import { ACCOUNT_ID, assignDemoLead, demoLeadPort } from '../demo/demo-lead';
 import { parseCreateInput, resolveTeamRef } from '../actions/handlers';
-import { defaultTitle } from '../resolvers/negotiation';
+import { defaultTitle, dependencyMap } from '../resolvers/negotiation';
 import { actionServices, links } from '../actions/services';
 import { contractLinks } from '../actions/links';
 import { contractDisplay } from '../actions/display';
@@ -37,6 +38,9 @@ import { actionHandlers } from '../actions';
 import { listSprints, moveIssuesToBacklog, moveIssuesToSprint } from '../jira/sprints';
 import { UserFacingError } from '../errors';
 import { getIssue, listSprintIssues } from '../jira/issues';
+import { projectKeyOf, suggestFromLink, type IssueLinkEvent } from '../suggestions/link-suggestions';
+import { productionSuggestionDeps } from '../suggestions/store';
+import { diagAuthorized } from './auth';
 
 type Check = { ok: true; detail: unknown } | { ok: false; error: string };
 
@@ -243,7 +247,47 @@ async function diagMonitor() {
   await productionDeps.store.audit('monitor', 'daily', 'monitor-started', 'diag-webtrigger', { trigger: 'diag', teams: teamIds });
   const results = [];
   for (const teamId of teamIds) results.push(await monitorProviderTeam(monitorDeps, teamId));
-  return results;
+  const escalations = await retryEscalations(productionDeps, await pendingEscalations());
+  return escalations.length ? { teams: results, escalations } : results;
+}
+
+/**
+ * FR-16 check. `op=list` shows the stored suggestions. Otherwise creates "`blocker` blocks `blocked`" as
+ * the app (only between registered Accord team projects). That link reaches the trigger as self-generated
+ * and is ignored there, so the same link is then replayed through the trigger code as a user link.
+ */
+async function diagLinkSuggestion(query: Record<string, string[]>) {
+  const list = () => select('SELECT * FROM link_suggestions ORDER BY id DESC LIMIT 20', []);
+  if (param(query, 'op', '') === 'list') return { suggestions: await list() };
+  const blocked = param(query, 'blocked', '').toUpperCase();
+  const blocker = param(query, 'blocker', '').toUpperCase();
+  if (!ISSUE_KEY.test(blocked) || !ISSUE_KEY.test(blocker)) throw new UserFacingError('Pass ?blocked=<issue key>&blocker=<issue key>.');
+  for (const key of [blocked, blocker]) {
+    if (!(await getTeamByProjectKey(projectKeyOf(key)))) throw new UserFacingError(`${key} is not in an Accord team project.`);
+  }
+  const findLink = async () => (await listIssueLinks(blocked)).find((link) => link.type.name === 'Blocks' && link.inwardIssue?.key === blocker);
+  let link = await findLink();
+  const created = !link;
+  if (!link) {
+    await linkBlocks(blocker, blocked);
+    link = await findLink();
+  }
+  const [blockerIssue, blockedIssue] = await Promise.all([getIssue(blocker), getIssue(blocked)]);
+  const event: IssueLinkEvent = {
+    eventType: 'avi:jira:created:issuelink',
+    selfGenerated: false,
+    id: link?.id,
+    sourceIssueId: blockerIssue.id,
+    destinationIssueId: blockedIssue.id,
+    issueLinkType: { name: 'Blocks' },
+  };
+  return {
+    link: { id: link?.id ?? null, created, reads: `${blocked} is blocked by ${blocker}` },
+    replay: await suggestFromLink(productionSuggestionDeps, event),
+    replayAgain: await suggestFromLink(productionSuggestionDeps, event),
+    selfGenerated: await suggestFromLink(productionSuggestionDeps, { ...event, selfGenerated: true }),
+    suggestions: await list(),
+  };
 }
 
 /** Calls every Rovo action handler as the app (no user principal in a web trigger). */
@@ -254,9 +298,9 @@ async function diagActions(query: Record<string, string[]>) {
   const requestId = param(query, 'id', '');
   const result: Record<string, unknown> = {
     actingAs: 'app without user',
-    listTeams: await actionHandlers.listTeams(),
+    listTeams: await actionHandlers.listTeams(viewer),
     // Same resolution create-dependency-request uses for providerTeamKey (key or team name).
-    resolvedProvider: resolveTeamRef(param(query, 'provider', 'PAY'), await actionServices.teams(), 'providerTeamKey'),
+    resolvedProvider: resolveTeamRef(param(query, 'provider', 'PAY'), await actionServices.teams(viewer), 'providerTeamKey'),
     // The user-scoped actions return nothing here; these are the links list-contracts adds to each row.
     contractUrls: await (async () => {
       const site = await links();
@@ -306,6 +350,7 @@ async function diagActions(query: Record<string, string[]>) {
         size: param(query, 'size', 'S'),
         neededBy: param(query, 'neededBy', ''),
         costClass: param(query, 'cost', 'standard'),
+        confirm: query.confirm?.[0] === '1',
       },
       viewer,
     );
@@ -359,8 +404,9 @@ async function verifySprintMove(query: Record<string, string[]>) {
 }
 
 export async function devDiagHandler(request: WebTriggerRequest): Promise<WebTriggerResponse> {
-  // The web trigger URL is public: everything is refused unless the development-only variable is set.
-  if (process.env.ACCORD_DIAG_ENABLED !== 'true') {
+  // The web trigger URL is public: everything is refused unless the development-only variable is set
+  // and the request carries the diag key (same 404 either way, so a probe learns nothing).
+  if (!diagAuthorized(request.headers, process.env)) {
     return { statusCode: 404, headers: { 'Content-Type': ['application/json'] }, body: JSON.stringify({ error: 'Not found' }) };
   }
   const action = request.queryParameters?.action?.[0] ?? 'status';
@@ -412,6 +458,16 @@ export async function devDiagHandler(request: WebTriggerRequest): Promise<WebTri
       body = users.map(({ accountId, displayName, accountType }) => ({ accountId, displayName, accountType }));
     } else if (action === 'actions') {
       body = await diagActions(request.queryParameters ?? {});
+    } else if (action === 'link-suggestion') {
+      body = await diagLinkSuggestion(request.queryParameters ?? {});
+    } else if (action === 'dependency-map') {
+      // Approver sides use `?account=` (default: development owner); Jira visibility is checked as the app.
+      const account = diagLead({ lead: request.queryParameters?.account ?? [] });
+      body = {
+        account,
+        withoutViewer: await dependencyMap(undefined, 'app'),
+        map: await dependencyMap(account ?? undefined, 'app'),
+      };
     } else if (action === 'verify-sprint-move') {
       body = await verifySprintMove(request.queryParameters ?? {});
     } else if (action === 'audit') {
@@ -420,7 +476,7 @@ export async function devDiagHandler(request: WebTriggerRequest): Promise<WebTri
         : await select('SELECT id, entity_type, entity_id, action, created_at FROM audit_log ORDER BY created_at DESC, id DESC LIMIT 30', []);
     } else if (action === 'request') {
       const id = request.queryParameters?.id?.[0];
-      body = id ? await diagRequest(id) : await requestsByStatus(['negotiating', 'awaiting-approval', 'approved', 'contracted', 'rejected', 'failed'], 10);
+      body = id ? await diagRequest(id) : await requestsByStatus(['negotiating', 'awaiting-approval', 'approved', 'contracted', 'rejected', 'failed', 'cancelled'], 10);
     } else body = await status(request.queryParameters?.adopt?.[0] === '1');
   } catch (error) {
     // Details only in the Forge log; the public response stays generic (user-facing messages excepted).

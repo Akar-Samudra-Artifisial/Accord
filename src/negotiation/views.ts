@@ -1,4 +1,5 @@
 import { formatDate, formatDateRange } from '../format/dates';
+import { plural } from '../format/text';
 import { buildConsequences, explainOption, type TraceStep } from '../planner';
 import type { Team } from '../teams/repository';
 import {
@@ -52,6 +53,23 @@ export interface DealSheetView {
   sideStatus: Record<Side, SideStatus>;
   /** Jira changes Accord made, once the contract is applied (status `contracted`). */
   appliedChanges: AppliedChange[];
+  /** FR-14: what the renegotiated contract agreed and why it is renegotiated; null for a normal request. */
+  renegotiationContext: { text: string; issueKeys: string[] } | null;
+}
+
+/**
+ * "Renegotiation of the contract for PAY-20: agreed Nov 29, 2026, now projected Dec 13, 2026 after 2 critical bugs."
+ * Dates come from the replaced contract (its last monitor evaluation); the bug count from round 1's work-ahead summary.
+ */
+export function renegotiationContext(parent: Contract, criticalBugs: number | null): string {
+  const subject = parent.deliverableIssueKey ? `the contract for ${parent.deliverableIssueKey}` : 'the earlier contract';
+  const agreed =
+    parent.agreedDateMin === parent.agreedDateMax
+      ? formatDate(parent.agreedDateMax)
+      : formatDateRange(parent.agreedDateMin, parent.agreedDateMax);
+  const projected = formatDate(parent.projectedDate, 'beyond the planning horizon');
+  const cause = criticalBugs && criticalBugs > 0 ? ` after ${plural(criticalBugs, 'critical bug')}` : '';
+  return `Renegotiation of ${subject}: agreed ${agreed}, now projected ${projected}${cause}.`;
 }
 
 export interface SideStatus {
@@ -198,13 +216,16 @@ export function openSides(viewerSides: readonly Side[], status: Record<Side, Sid
 
 export async function buildDealSheet(input: DealSheetInput): Promise<DealSheetView> {
   const { store, request, requester, provider } = input;
-  const [rounds, options, approvals, contract] = await Promise.all([
+  const [rounds, options, approvals, contract, renegotiation] = await Promise.all([
     store.listRounds(request.id),
     store.listOptions(request.id),
     store.listApprovals(request.id),
     store.getContract(request.id),
+    store.getRenegotiation(request.id),
   ]);
+  const parentContract = renegotiation ? await store.getContract(renegotiation.parentRequestId) : null;
   const providerRound = round(rounds, 1, 'provider-delegate');
+  const criticalBugs = (providerRound?.output as { workAhead?: { criticalBugs?: unknown } } | null)?.workAhead?.criticalBugs;
   const requesterRound = round(rounds, 1, 'requester-delegate');
   const brokerRound = round(rounds, 2, 'broker');
   const rankedIds = (brokerRound?.status === 'done' ? (brokerRound.output as { rankedOptionIds?: number[] }) : null)?.rankedOptionIds;
@@ -260,6 +281,12 @@ export async function buildDealSheet(input: DealSheetInput): Promise<DealSheetVi
       request.status === 'contracted' && contract && agreedView
         ? appliedChanges(request, provider.jiraProjectKey, agreedView, contract)
         : [],
+    renegotiationContext: parentContract
+      ? {
+          text: renegotiationContext(parentContract, typeof criticalBugs === 'number' ? criticalBugs : null),
+          issueKeys: parentContract.deliverableIssueKey ? [parentContract.deliverableIssueKey] : [],
+        }
+      : null,
   };
 }
 
@@ -273,6 +300,15 @@ export interface RequestSummary {
   provider: string;
   /** Sides the viewer still has to decide for. */
   pendingFor: Side[];
+  /** Opened by Accord for an at-risk contract (FR-14). */
+  renegotiation: boolean;
+  /** Display names the request was escalated to (FR-15); empty when not escalated. */
+  escalatedTo: string[];
+}
+
+export interface SummaryExtras {
+  renegotiation?: boolean;
+  escalatedTo?: readonly string[];
 }
 
 export function summarize(
@@ -280,6 +316,7 @@ export function summarize(
   teams: ReadonlyMap<string, Team>,
   viewerSides: Side[],
   approvals: readonly Approval[],
+  extras: SummaryExtras = {},
 ): RequestSummary {
   const state = approvalState(approvals, request.requesterTeamId, request.providerTeamId);
   const pendingFor =
@@ -295,5 +332,7 @@ export function summarize(
     requester: teams.get(request.requesterTeamId)?.name ?? request.requesterTeamId,
     provider: teams.get(request.providerTeamId)?.name ?? request.providerTeamId,
     pendingFor,
+    renegotiation: extras.renegotiation ?? false,
+    escalatedTo: [...(extras.escalatedTo ?? [])],
   };
 }

@@ -18,6 +18,27 @@ describe('planOptions', () => {
     expect(option.dateRange).toEqual({ min: '2026-11-15', max: '2026-11-15' });
   });
 
+  it('renegotiation (workAhead): never earlier than the monitor projection, with a shift option that lowers it', () => {
+    const commitments = shiftScenario();
+    const input = baseInput({
+      request: { size: 'S', neededBy: '2026-11-29', costClass: 'standard' },
+      commitments,
+      workAhead: { issues: 20, countedKeys: commitments.map((c) => c.key), countedSprintIds: ['s1', 's2'], pinnedKeys: ['PAY-3'] },
+    });
+    // Without the floor the request would fit on time in Sprint 41/42.
+    expect(planOptions({ ...input, workAhead: undefined }).options[0]).toMatchObject({ kind: 'on-time', meetsNeed: true });
+    const result = planOptions(input);
+    expect(result.options.length).toBeGreaterThanOrEqual(2);
+    // 20 ahead + 1 at 9 per sprint: done in the third sprint (Sprint 43) unless counted work moves out.
+    const plain = result.options.filter((o) => o.shifted.length === 0 && o.kind !== 'reject');
+    expect(plain.length).toBeGreaterThan(0);
+    expect(plain.every((o) => (o.dateRange?.max ?? '') >= '2026-12-13')).toBe(true);
+    const shift = result.options.find((o) => o.kind === 'on-time-with-shift');
+    expect(shift?.dateRange?.max).toBe('2026-11-29');
+    expect(shift?.shifted.map((s) => s.key)).not.toContain('PAY-3');
+    expect(explainOption(plain[0])).toContain('As the contract monitor projects it, 20 issues of open sprint work');
+  });
+
   it('shifts the cheapest shiftable work when capacity is short', () => {
     const result = planOptions(
       baseInput({ request: { size: 'L', neededBy: '2026-11-29', costClass: 'fixed-date' }, commitments: shiftScenario() }),

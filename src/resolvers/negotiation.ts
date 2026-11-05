@@ -10,18 +10,24 @@ import {
   contractsForRequests,
   listContracts,
   listEdges,
+  escalationsByRequest,
   optionsByIds,
   recentRequestCount,
+  renegotiationsByRequest,
+  renegotiationsOfParents,
   requestsForIssue,
   requestsForTeams,
 } from '../negotiation/store';
 import { toAuditRow, type AuditRow } from '../negotiation/audit-view';
-import { buildDealSheet, redact, summarize } from '../negotiation/views';
+import { buildDealSheet, redact, summarize, type SummaryExtras } from '../negotiation/views';
 import { KIND_LABEL, type Side } from '../negotiation/delegates';
 import type { Principal } from '../atlassian/http';
 import { formatDateRange } from '../format/dates';
 import { explainOption, planOptions, type CostClass, type Size } from '../planner';
-import type { DependencyRequest } from '../negotiation/types';
+import { OPEN_RENEGOTIATION_STATUSES, type ContractStatus, type DependencyRequest } from '../negotiation/types';
+import type { DependencyEdge } from '../negotiation/store';
+import { convertSuggestions, dismissSuggestion, visibleSuggestions } from '../suggestions/link-suggestions';
+import { sqlSuggestionStore } from '../suggestions/store';
 
 /** Resolver logic for the issue panel, deal sheet and global page (M3). */
 
@@ -74,6 +80,12 @@ async function requireViewer(
   throw new NegotiationError('You do not have access to this request.');
 }
 
+/** Renegotiation flag (FR-14) and escalation names (FR-15) of the given requests. */
+async function summaryExtras(requestIds: readonly string[]): Promise<(requestId: string) => SummaryExtras> {
+  const [renegotiations, escalations] = await Promise.all([renegotiationsByRequest(requestIds), escalationsByRequest(requestIds)]);
+  return (requestId) => ({ renegotiation: renegotiations.has(requestId), escalatedTo: escalations.get(requestId) ?? [] });
+}
+
 function projectKeyOf(issueKey: string): string {
   return issueKey.slice(0, issueKey.lastIndexOf('-'));
 }
@@ -83,29 +95,60 @@ export async function panelState(context: ResolverContext) {
   if (!issueKey || !ISSUE_KEY.test(issueKey)) throw new NegotiationError('No Jira issue in context.');
   const teams = await teamMap();
   const requesterTeam = await getTeamByProjectKey(projectKeyOf(issueKey));
-  const providerTeams = [];
+  const providerTeams: Array<{ teamKey: string; name: string }> = [];
   for (const team of teams.values()) {
     if (team.id === requesterTeam?.id) continue;
     if ((await getCharter(team.id))?.valid) providerTeams.push({ teamKey: team.teamKey, name: team.name });
   }
   const found = await requestsForIssue(issueKey);
-  const [approvers, approvals] = await Promise.all([approverMap(teams), approvalsByRequest(found.map((r) => r.id))]);
+  const ids = found.map((r) => r.id);
+  const [approvers, approvals, extras] = await Promise.all([approverMap(teams), approvalsByRequest(ids), summaryExtras(ids)]);
   const requests = [];
   for (const request of found) {
     const contract = await productionDeps.store.getContract(request.id);
     requests.push({
-      ...summarize(request, teams, viewerSides(request, approvers, context.accountId), approvals.get(request.id) ?? []),
+      ...summarize(request, teams, viewerSides(request, approvers, context.accountId), approvals.get(request.id) ?? [], extras(request.id)),
       contract: contract
         ? { status: contract.status, projectedDate: contract.projectedDate, agreedDateMax: contract.agreedDateMax }
         : null,
     });
   }
+  // FR-16: open "blocked by" suggestions, only when the user can browse both issues.
+  const suggestions = (await visibleSuggestions(sqlSuggestionStore, issueKey, (keys) => visibleIssueKeys(keys, 'user'))).map((suggestion) => {
+    const provider = teams.get(suggestion.providerTeamId);
+    return {
+      id: suggestion.id,
+      blockerIssueKey: suggestion.blockerIssueKey,
+      providerTeamKey: provider?.teamKey ?? null,
+      providerName: provider?.name ?? 'an unregistered team',
+      // A request needs a provider with a valid charter (same list as the form).
+      canRequest: providerTeams.some((team) => team.teamKey === provider?.teamKey),
+    };
+  });
   return {
     issueKey,
     requesterTeam: requesterTeam ? { teamKey: requesterTeam.teamKey, name: requesterTeam.name } : null,
     providerTeams,
     requests,
+    suggestions,
   };
+}
+
+/** Dismisses a "blocked by" suggestion from the issue panel (FR-16), as the user. */
+export async function dismissLinkSuggestion(payload: Record<string, unknown>, accountId: string | undefined) {
+  const suggestionId = Number(payload.suggestionId);
+  if (!Number.isInteger(suggestionId) || suggestionId <= 0) throw new NegotiationError('A valid suggestion id is required.');
+  const dismissed = await dismissSuggestion(
+    sqlSuggestionStore,
+    suggestionId,
+    accountId,
+    (keys) => visibleIssueKeys(keys, 'user'),
+    async (blockedIssueKey) => {
+      const granted = await myPermissions({ issueKey: blockedIssueKey }, ['LINK_ISSUES', 'ADD_COMMENTS'], 'user');
+      return granted.has('LINK_ISSUES') || granted.has('ADD_COMMENTS');
+    },
+  );
+  return { suggestionId: dismissed.id, status: dismissed.status };
 }
 
 function readString(payload: Record<string, unknown>, name: string): string {
@@ -118,6 +161,42 @@ function readString(payload: Record<string, unknown>, name: string): string {
  * (no user context there) together with a fixed creator id.
  */
 export async function createRequestFromIssue(payload: Record<string, unknown>, accountId: string | undefined, as: Principal = 'user') {
+  const prepared = await prepareRequest(payload, accountId, as);
+  if ((await recentRequestCount(prepared.createdBy)) >= MAX_REQUESTS_PER_HOUR) {
+    throw new NegotiationError(`You can create at most ${MAX_REQUESTS_PER_HOUR} requests per hour. Try again later.`);
+  }
+  const request = await createRequest(productionDeps, prepared, `req-${randomUUID()}`);
+  // FR-16: the request answers the suggestion card it was created from (same issue and provider only).
+  const chosen = Number(payload.suggestionId);
+  try {
+    if (Number.isInteger(chosen) && chosen > 0) await convertSuggestions(sqlSuggestionStore, request, prepared.createdBy, { suggestionId: chosen });
+  } catch (error) {
+    // The request exists; a suggestion left open only means the panel still offers it.
+    console.error(`[createRequest] suggestions of ${request.id} not converted`, error instanceof Error ? error.message : String(error));
+  }
+  return { requestId: request.id, status: request.status, title: request.title };
+}
+
+/**
+ * What `createRequestFromIssue` would create, without creating anything (MCP/Rovo preview): the same
+ * checks as the user, the resolved teams, the final title and the dates.
+ */
+export async function previewRequestFromIssue(payload: Record<string, unknown>, accountId: string | undefined, as: Principal = 'user') {
+  const prepared = await prepareRequest(payload, accountId, as);
+  return {
+    sourceIssueKey: prepared.sourceIssueKey,
+    requesterTeam: { teamKey: prepared.requesterTeam.teamKey, name: prepared.requesterTeam.name },
+    providerTeam: { teamKey: prepared.providerTeam.teamKey, name: prepared.providerTeam.name },
+    title: normalizeTitle(prepared.title),
+    size: prepared.size,
+    minSize: prepared.minSize,
+    neededBy: prepared.neededBy,
+    costClass: prepared.costClass,
+  };
+}
+
+/** Validates a create payload as the user and resolves teams and title (shared by create and preview). */
+async function prepareRequest(payload: Record<string, unknown>, accountId: string | undefined, as: Principal) {
   if (!accountId) throw new NegotiationError('A signed-in Jira user is required.');
   const sourceIssueKey = readString(payload, 'sourceIssueKey').toUpperCase();
   if (!ISSUE_KEY.test(sourceIssueKey)) throw new NegotiationError('A valid source issue key is required, for example MOB-1.');
@@ -135,28 +214,20 @@ export async function createRequestFromIssue(payload: Record<string, unknown>, a
   if (!(await getCharter(providerTeam.id))?.valid) {
     throw new NegotiationError(`${providerTeam.name} has no valid charter, so it cannot receive requests yet.`);
   }
-  if ((await recentRequestCount(accountId)) >= MAX_REQUESTS_PER_HOUR) {
-    throw new NegotiationError(`You can create at most ${MAX_REQUESTS_PER_HOUR} requests per hour. Try again later.`);
-  }
   const rawMin = payload.minSize;
   const minSize = rawMin === undefined || rawMin === null || rawMin === '' ? null : Number(rawMin);
   const costClass = (readString(payload, 'costClass') || 'standard') as CostClass;
-  const request = await createRequest(
-    productionDeps,
-    {
-      sourceIssueKey,
-      requesterTeam,
-      providerTeam,
-      title: defaultTitle(readString(payload, 'title'), sourceIssue.fields.summary, sourceIssueKey),
-      size: readString(payload, 'size').toUpperCase() as Size,
-      minSize: minSize !== null && Number.isNaN(minSize) ? -1 : minSize,
-      neededBy: readString(payload, 'neededBy'),
-      costClass,
-      createdBy: accountId,
-    },
-    `req-${randomUUID()}`,
-  );
-  return { requestId: request.id, status: request.status, title: request.title };
+  return {
+    sourceIssueKey,
+    requesterTeam,
+    providerTeam,
+    title: defaultTitle(readString(payload, 'title'), sourceIssue.fields.summary, sourceIssueKey),
+    size: readString(payload, 'size').toUpperCase() as Size,
+    minSize: minSize !== null && Number.isNaN(minSize) ? -1 : minSize,
+    neededBy: readString(payload, 'neededBy'),
+    costClass,
+    createdBy: accountId,
+  };
 }
 
 /**
@@ -297,10 +368,28 @@ export async function inbox(accountId: string | undefined) {
   const myTeams = [...approvers].filter(([, ids]) => ids.includes(accountId)).map(([teamId]) => teamId);
   // Viewer filter in SQL, before the limit.
   const found = await requestsForTeams(myTeams, ['awaiting-approval', 'negotiating', 'approved', 'failed', 'rejected'], 50);
-  const approvals = await approvalsByRequest(found.map((request) => request.id));
+  const ids = found.map((request) => request.id);
+  const [approvals, extras] = await Promise.all([approvalsByRequest(ids), summaryExtras(ids)]);
   return found
-    .map((request) => summarize(request, teams, viewerSides(request, approvers, accountId), approvals.get(request.id) ?? []))
+    .map((request) => summarize(request, teams, viewerSides(request, approvers, accountId), approvals.get(request.id) ?? [], extras(request.id)))
     .sort((a, b) => b.pendingFor.length - a.pendingFor.length);
+}
+
+/**
+ * At-risk contracts of the viewer's teams without a renegotiation in progress (FR-14): the monitor opens one
+ * shortly, so the Inbox keeps polling while this is above zero.
+ */
+export async function awaitingRenegotiations(accountId: string | undefined): Promise<number> {
+  if (!accountId) return 0;
+  const teams = await teamMap();
+  const approvers = await approverMap(teams);
+  const atRisk = (await listContracts()).filter(
+    ({ contract, request }) => contract.status === 'at-risk' && viewerSides(request, approvers, accountId).length > 0,
+  );
+  if (atRisk.length === 0) return 0;
+  const children = await renegotiationsOfParents(atRisk.map(({ request }) => request.id));
+  return atRisk.filter(({ request }) => !(children.get(request.id) ?? []).some((child) => OPEN_RENEGOTIATION_STATUSES.includes(child.status)))
+    .length;
 }
 
 export type ContractRole = 'provider' | 'requester';
@@ -317,9 +406,12 @@ export function contractRole(request: DependencyRequest, team: Team | null, side
   return null;
 }
 
+/** Shown instead of a title the viewer may not read. */
+export const RESTRICTED = 'Restricted';
+
 /**
  * Contracts the viewer may see: approver/lead of either team, or able to browse the
- * source issue or the deliverable.
+ * source issue or the deliverable. Other viewers get only the fields of the issues they can browse.
  */
 export async function contracts(accountId: string | undefined, teamKey?: string, as: Principal = 'user') {
   if (!accountId) return [];
@@ -331,31 +423,72 @@ export async function contracts(accountId: string | undefined, teamKey?: string,
   const needsCheck = rows.filter(({ request }) => viewerSides(request, approvers, accountId).length === 0);
   const keys = needsCheck.flatMap(({ request, contract }) => [request.sourceIssueKey, ...(contract.deliverableIssueKey ? [contract.deliverableIssueKey] : [])]);
   const visible = keys.length ? await visibleIssueKeys(keys, as) : new Set<string>();
-  return rows
-    .filter(
-      ({ request, contract }) =>
-        viewerSides(request, approvers, accountId).length > 0 ||
-        visible.has(request.sourceIssueKey) ||
-        (contract.deliverableIssueKey !== null && visible.has(contract.deliverableIssueKey)),
-    )
-    .map(({ contract, request }) => ({
+  const shown = rows.filter(
+    ({ request, contract }) =>
+      viewerSides(request, approvers, accountId).length > 0 ||
+      visible.has(request.sourceIssueKey) ||
+      (contract.deliverableIssueKey !== null && visible.has(contract.deliverableIssueKey)),
+  );
+  const requestIds = shown.map(({ request }) => request.id);
+  const [ownRenegotiations, children] = await Promise.all([renegotiationsByRequest(requestIds), renegotiationsOfParents(requestIds)]);
+  const childIds = [...children.values()].flatMap((list) => list.map((child) => child.requestId));
+  const [childEscalations, childContracts] = await Promise.all([
+    escalationsByRequest(childIds),
+    contractsForRequests([...children.values()].flatMap((list) => list.filter((child) => child.status === 'contracted').map((child) => child.requestId))),
+  ]);
+  const contractOf = new Map(childContracts.map((row) => [row.request.id, row.contract]));
+  return shown.map(({ contract, request }) => {
+    const ownChildren = children.get(request.id) ?? [];
+    const latest = ownChildren[0];
+    // The renegotiation whose contract replaced this one (FR-14).
+    const replacement = contract.status === 'superseded' ? ownChildren.find((child) => contractOf.has(child.requestId)) : undefined;
+    const replacementContract = replacement ? contractOf.get(replacement.requestId) : undefined;
+    // Per-field redaction: a viewer on neither side sees only the issues they can browse (checked as the user).
+    const party = viewerSides(request, approvers, accountId).length > 0;
+    const sourceVisible = party || visible.has(request.sourceIssueKey);
+    const deliverableVisible = contract.deliverableIssueKey !== null && (party || visible.has(contract.deliverableIssueKey));
+    return {
       contractId: contract.id,
       requestId: request.id,
       // Side of the filtered team (or, without a filter, of the viewer's team); null when the viewer is on neither.
       role: contractRole(request, team, viewerSides(request, approvers, accountId)),
-      title: request.title,
+      // The title is written from the source issue, so it follows the source issue's visibility.
+      title: sourceVisible ? request.title : RESTRICTED,
       requester: teams.get(request.requesterTeamId)?.name ?? request.requesterTeamId,
       requesterTeamKey: teams.get(request.requesterTeamId)?.teamKey ?? null,
       provider: teams.get(request.providerTeamId)?.name ?? request.providerTeamId,
       providerTeamKey: teams.get(request.providerTeamId)?.teamKey ?? null,
-      sourceIssueKey: request.sourceIssueKey,
-      deliverableIssueKey: contract.deliverableIssueKey,
+      sourceIssueKey: sourceVisible ? request.sourceIssueKey : null,
+      deliverableIssueKey: deliverableVisible ? contract.deliverableIssueKey : null,
+      /** True when a deliverable exists but the viewer cannot browse it (null key means "restricted", not "pending"). */
+      deliverableRestricted: contract.deliverableIssueKey !== null && !deliverableVisible,
       agreedDateMin: contract.agreedDateMin,
       agreedDateMax: contract.agreedDateMax,
       projectedDate: contract.projectedDate,
       status: contract.status,
-    }));
+      renegotiation: ownRenegotiations.has(request.id),
+      // Newest renegotiation opened for this contract, with its request status.
+      latestRenegotiation: latest ? { requestId: latest.requestId, status: latest.status } : null,
+      supersededBy:
+        replacement && replacementContract
+          ? {
+              requestId: replacement.requestId,
+              contractId: replacementContract.id,
+              agreedDateMin: replacementContract.agreedDateMin,
+              agreedDateMax: replacementContract.agreedDateMax,
+            }
+          : null,
+      // A renegotiation that ended without agreement was escalated (FR-15).
+      escalatedTo: latest ? (childEscalations.get(latest.requestId) ?? []) : [],
+      renegotiationCount: ownChildren.length,
+      // Renegotiations still in progress (Network shows these; the total is history).
+      openRenegotiationCount: ownChildren.filter((child) => OPEN_RENEGOTIATION_STATUSES.includes(child.status)).length,
+      escalationCount: ownChildren.filter((child) => (childEscalations.get(child.requestId) ?? []).length > 0).length,
+    };
+  });
 }
+
+export type ContractView = Awaited<ReturnType<typeof contracts>>[number];
 
 export interface DependencySummary {
   from: string;
@@ -367,10 +500,18 @@ export interface DependencySummary {
 /** Agreed dependency edges between teams (FR-13), counted over the contracts the viewer may see. */
 export async function dependencySummary(visible: ReadonlyArray<{ contractId: number; status: string }>): Promise<DependencySummary[]> {
   if (visible.length === 0) return [];
+  const [edges, teams] = await Promise.all([listEdges(), teamMap()]);
+  return summarizeEdges(visible, edges, teams);
+}
+
+function summarizeEdges(
+  visible: ReadonlyArray<{ contractId: number; status: string }>,
+  edges: readonly DependencyEdge[],
+  teams: ReadonlyMap<string, Team>,
+): DependencySummary[] {
   const statusById = new Map(visible.map((row) => [row.contractId, row.status]));
-  const teams = await teamMap();
   const pairs = new Map<string, DependencySummary>();
-  for (const edge of await listEdges()) {
+  for (const edge of edges) {
     const status = statusById.get(edge.contractId);
     if (status === undefined) continue;
     const key = `${edge.fromTeamId}>${edge.toTeamId}`;
@@ -385,7 +526,163 @@ export async function dependencySummary(visible: ReadonlyArray<{ contractId: num
   return [...pairs.values()].sort((a, b) => b.atRisk - a.atRisk || b.contracts - a.contracts);
 }
 
-const ALL_STATUSES = ['negotiating', 'awaiting-approval', 'approved', 'contracted', 'rejected', 'failed'] as const;
+/** Worst first; superseded contracts are shown dimmed and never count towards a team's status. */
+const NETWORK_SEVERITY: Record<ContractStatus, number> = { 'at-risk': 4, unknown: 3, applying: 2, 'on-track': 1, superseded: 0 };
+
+export type NetworkTeamStatus = Exclude<ContractStatus, 'superseded'> | 'none';
+
+export interface NetworkTeam {
+  teamKey: string | null;
+  name: string;
+  /** Worst status over the team's active contracts (as requester or provider); `none` when all are superseded. */
+  worstStatus: NetworkTeamStatus;
+  contracts: number;
+  atRisk: number;
+  /** Renegotiations still in progress for the team's active contracts. */
+  renegotiations: number;
+  /** All renegotiations ever opened for those contracts (history, shown as a tooltip). */
+  renegotiationHistory: number;
+  escalations: number;
+}
+
+export interface NetworkEdge {
+  contractId: number;
+  requestId: string;
+  title: string;
+  requester: string;
+  requesterTeamKey: string | null;
+  provider: string;
+  providerTeamKey: string | null;
+  /** Null when the viewer cannot browse the issue (redacted per field). */
+  sourceIssueKey: string | null;
+  deliverableIssueKey: string | null;
+  deliverableRestricted: boolean;
+  agreedDateMin: string;
+  agreedDateMax: string;
+  projectedDate: string | null;
+  status: ContractStatus;
+  /** Replaced by a renegotiated contract (FR-14): shown dimmed, ignored for team status. */
+  dimmed: boolean;
+  /** Open renegotiations of this contract. */
+  renegotiations: number;
+  renegotiationHistory: number;
+  escalations: number;
+}
+
+export interface DependencyMap {
+  teams: NetworkTeam[];
+  edges: NetworkEdge[];
+  summary: DependencySummary[];
+}
+
+type MapRow = Pick<
+  ContractView,
+  | 'contractId'
+  | 'requestId'
+  | 'title'
+  | 'sourceIssueKey'
+  | 'deliverableIssueKey'
+  | 'deliverableRestricted'
+  | 'agreedDateMin'
+  | 'agreedDateMax'
+  | 'projectedDate'
+  | 'status'
+  | 'renegotiationCount'
+  | 'openRenegotiationCount'
+  | 'escalationCount'
+>;
+
+/** Builds the team network (FR-17) from dependency edges, keeping only contracts in `visible`. */
+export function buildDependencyMap(visible: readonly MapRow[], edges: readonly DependencyEdge[], teams: ReadonlyMap<string, Team>): DependencyMap {
+  const rowById = new Map(visible.map((row) => [row.contractId, row]));
+  const nodes = new Map<string, NetworkTeam>();
+  const node = (teamId: string): NetworkTeam => {
+    const team = teams.get(teamId);
+    return (
+      nodes.get(teamId) ?? {
+        teamKey: team?.teamKey ?? null,
+        name: team?.name ?? teamId,
+        worstStatus: 'none',
+        contracts: 0,
+        atRisk: 0,
+        renegotiations: 0,
+        renegotiationHistory: 0,
+        escalations: 0,
+      }
+    );
+  };
+  const networkEdges: NetworkEdge[] = [];
+  const seen = new Set<number>();
+  for (const edge of edges) {
+    const row = rowById.get(edge.contractId);
+    if (!row || seen.has(edge.contractId)) continue;
+    seen.add(edge.contractId);
+    const dimmed = row.status === 'superseded';
+    for (const teamId of new Set([edge.fromTeamId, edge.toTeamId])) {
+      const current = node(teamId);
+      nodes.set(
+        teamId,
+        dimmed
+          ? current
+          : {
+              ...current,
+              worstStatus:
+                current.worstStatus === 'none' || NETWORK_SEVERITY[row.status] > NETWORK_SEVERITY[current.worstStatus]
+                  ? (row.status as NetworkTeamStatus)
+                  : current.worstStatus,
+              contracts: current.contracts + 1,
+              atRisk: current.atRisk + (row.status === 'at-risk' ? 1 : 0),
+              renegotiations: current.renegotiations + row.openRenegotiationCount,
+              renegotiationHistory: current.renegotiationHistory + row.renegotiationCount,
+              escalations: current.escalations + row.escalationCount,
+            },
+      );
+    }
+    const requester = node(edge.fromTeamId);
+    const provider = node(edge.toTeamId);
+    networkEdges.push({
+      contractId: row.contractId,
+      requestId: row.requestId,
+      title: row.title,
+      requester: requester.name,
+      requesterTeamKey: requester.teamKey,
+      provider: provider.name,
+      providerTeamKey: provider.teamKey,
+      sourceIssueKey: row.sourceIssueKey,
+      deliverableIssueKey: row.deliverableIssueKey,
+      deliverableRestricted: row.deliverableRestricted,
+      agreedDateMin: row.agreedDateMin,
+      agreedDateMax: row.agreedDateMax,
+      projectedDate: row.projectedDate,
+      status: row.status,
+      dimmed,
+      renegotiations: row.openRenegotiationCount,
+      renegotiationHistory: row.renegotiationCount,
+      escalations: row.escalationCount,
+    });
+  }
+  const severity = (status: NetworkTeamStatus) => (status === 'none' ? -1 : NETWORK_SEVERITY[status]);
+  return {
+    teams: [...nodes.values()].sort((a, b) => severity(b.worstStatus) - severity(a.worstStatus) || a.name.localeCompare(b.name)),
+    edges: networkEdges.sort((a, b) => Number(a.dimmed) - Number(b.dimmed) || NETWORK_SEVERITY[b.status] - NETWORK_SEVERITY[a.status]),
+    // Pair counts over active contracts only; superseded ones were replaced.
+    summary: summarizeEdges(
+      visible.filter((row) => row.status !== 'superseded'),
+      edges,
+      teams,
+    ),
+  };
+}
+
+/** Dependency network of the contracts the viewer may see (same visibility as the Contracts tab). */
+export async function dependencyMap(accountId: string | undefined, as: Principal = 'user'): Promise<DependencyMap> {
+  const rows = await contracts(accountId, undefined, as);
+  if (rows.length === 0) return { teams: [], edges: [], summary: [] };
+  const [edges, teams] = await Promise.all([listEdges(), teamMap()]);
+  return buildDependencyMap(rows, edges, teams);
+}
+
+const ALL_STATUSES = ['negotiating', 'awaiting-approval', 'approved', 'contracted', 'rejected', 'failed', 'cancelled'] as const;
 
 /**
  * Recent audit entries (NFR-7) of requests and contracts of teams the viewer can access: teams where

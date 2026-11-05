@@ -1,5 +1,6 @@
 import { parseJson, run, select } from '../sql/db';
 import { audit } from '../teams/repository';
+import { escalatedNames } from './audit-view';
 import type { CostClass, DateRange, OptionKind, ShiftedItem, Size, TraceStep } from '../planner';
 import type {
   Approval,
@@ -8,11 +9,28 @@ import type {
   DependencyRequest,
   NegotiationStore,
   RequestStatus,
+  Renegotiation,
   RoundRecord,
   RoundRole,
   StoredOption,
 } from './types';
-import { OPEN_REQUEST_STATUSES } from './types';
+import { APP_CREATOR, OPEN_RENEGOTIATION_STATUSES, OPEN_REQUEST_STATUSES } from './types';
+
+interface RenegotiationRow {
+  request_id: string;
+  parent_request_id: string;
+  contract_id: number;
+  episode: number;
+}
+
+const toRenegotiation = (row: RenegotiationRow): Renegotiation => ({
+  requestId: row.request_id,
+  parentRequestId: row.parent_request_id,
+  contractId: Number(row.contract_id),
+  episode: Number(row.episode),
+});
+
+const UNDECIDED: readonly RequestStatus[] = ['negotiating', 'awaiting-approval'];
 
 interface RequestRow {
   id: string;
@@ -154,32 +172,43 @@ export const sqlStore: NegotiationStore = {
   async insertRequest(request, limits) {
     // One statement: the duplicate and provider-rate checks hold at insert time (no read-then-write gap).
     const active = OPEN_REQUEST_STATUSES;
-    const result = await run(
-      `INSERT INTO requests (id, requester_team_id, provider_team_id, source_issue_key, title, size, min_size, needed_by,
-         cost_class, status, created_by)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM DUAL
-       WHERE NOT EXISTS (SELECT 1 FROM requests WHERE source_issue_key = ? AND provider_team_id = ? AND status IN (${marks(active)}))
-         AND (SELECT COUNT(*) FROM requests WHERE provider_team_id = ? AND created_at > CURRENT_TIMESTAMP - INTERVAL 1 HOUR) < ?`,
-      [
-        request.id,
-        request.requesterTeamId,
-        request.providerTeamId,
-        request.sourceIssueKey,
-        request.title,
-        request.size,
-        request.minSize,
-        request.neededBy,
-        request.costClass,
-        request.status,
-        request.createdBy,
-        request.sourceIssueKey,
-        request.providerTeamId,
-        ...active,
-        request.providerTeamId,
-        limits.maxPerProviderPerHour,
-      ],
-    );
+    const stored = async () => (await select<{ id: string }>('SELECT id FROM requests WHERE id = ?', [request.id])).length > 0;
+    let result: Awaited<ReturnType<typeof run>>;
+    try {
+      result = await run(
+        `INSERT INTO requests (id, requester_team_id, provider_team_id, source_issue_key, title, size, min_size, needed_by,
+           cost_class, status, created_by)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM DUAL
+         WHERE NOT EXISTS (SELECT 1 FROM requests WHERE source_issue_key = ? AND provider_team_id = ? AND status IN (${marks(active)}))
+           AND (SELECT COUNT(*) FROM requests WHERE provider_team_id = ? AND created_by <> ?
+                AND created_at > CURRENT_TIMESTAMP - INTERVAL 1 HOUR) < ?`,
+        [
+          request.id,
+          request.requesterTeamId,
+          request.providerTeamId,
+          request.sourceIssueKey,
+          request.title,
+          request.size,
+          request.minSize,
+          request.neededBy,
+          request.costClass,
+          request.status,
+          request.createdBy,
+          request.sourceIssueKey,
+          request.providerTeamId,
+          ...active,
+          request.providerTeamId,
+          APP_CREATOR,
+          limits.maxPerProviderPerHour,
+        ],
+      );
+    } catch (error) {
+      // Primary key taken by a parallel attempt with the same id (e.g. two monitor runs on one claim).
+      if (await stored()) return 'exists';
+      throw error;
+    }
     if (result.affectedRows > 0) return 'inserted';
+    if (await stored()) return 'exists';
     const duplicate = await select<{ n: number }>(
       `SELECT COUNT(*) AS n FROM requests WHERE source_issue_key = ? AND provider_team_id = ? AND status IN (${marks(active)})`,
       [request.sourceIssueKey, request.providerTeamId, ...active],
@@ -317,7 +346,96 @@ export const sqlStore: NegotiationStore = {
     return age === null || age === undefined ? null : Number(age);
   },
   audit,
+  async claimRenegotiation(claim) {
+    // The unique (contract_id, episode) key makes the claim atomic; a retry gets the id of the earlier attempt.
+    await run('INSERT IGNORE INTO renegotiations (request_id, parent_request_id, contract_id, episode) VALUES (?, ?, ?, ?)', [
+      claim.requestId,
+      claim.parentRequestId,
+      claim.contractId,
+      claim.episode,
+    ]);
+    const rows = await select<{ request_id: string }>('SELECT request_id FROM renegotiations WHERE contract_id = ? AND episode = ?', [
+      claim.contractId,
+      claim.episode,
+    ]);
+    if (!rows[0]) throw new Error(`Renegotiation of contract ${claim.contractId} was not stored`);
+    return rows[0].request_id;
+  },
+  async releaseRenegotiation(requestId) {
+    // Guarded in the same statement: a request stored by a parallel run keeps its claim.
+    await run('DELETE FROM renegotiations WHERE request_id = ? AND NOT EXISTS (SELECT 1 FROM requests WHERE id = ?)', [requestId, requestId]);
+  },
+  async getRenegotiation(requestId) {
+    const rows = await select<RenegotiationRow>('SELECT * FROM renegotiations WHERE request_id = ?', [requestId]);
+    return rows[0] ? toRenegotiation(rows[0]) : null;
+  },
+  async openRenegotiationFor(contractId) {
+    const rows = await select<{ request_id: string }>(
+      `SELECT n.request_id FROM renegotiations n JOIN requests r ON r.id = n.request_id
+       WHERE n.contract_id = ? AND r.status IN (${marks(OPEN_RENEGOTIATION_STATUSES)}) LIMIT 1`,
+      [contractId, ...OPEN_RENEGOTIATION_STATUSES],
+    );
+    return rows[0]?.request_id ?? null;
+  },
+  async undecidedRenegotiations(providerTeamId) {
+    const rows = await select<{ request_id: string }>(
+      `SELECT n.request_id FROM renegotiations n JOIN requests r ON r.id = n.request_id
+       WHERE r.provider_team_id = ? AND r.status IN (${marks(UNDECIDED)}) ORDER BY n.created_at`,
+      [providerTeamId, ...UNDECIDED],
+    );
+    return rows.map((row) => row.request_id);
+  },
 };
+
+/** Renegotiation rows of the given requests (as renegotiation), keyed by request id. */
+export async function renegotiationsByRequest(requestIds: readonly string[]): Promise<Map<string, Renegotiation>> {
+  if (requestIds.length === 0) return new Map();
+  const rows = await select<RenegotiationRow>(`SELECT * FROM renegotiations WHERE request_id IN (${marks(requestIds)})`, [...requestIds]);
+  return new Map(rows.map((row) => [row.request_id, toRenegotiation(row)]));
+}
+
+export interface ChildRenegotiation extends Renegotiation {
+  status: RequestStatus;
+}
+
+/** Renegotiations opened for the given parent requests, newest first per parent. */
+export async function renegotiationsOfParents(parentRequestIds: readonly string[]): Promise<Map<string, ChildRenegotiation[]>> {
+  const grouped = new Map<string, ChildRenegotiation[]>();
+  if (parentRequestIds.length === 0) return grouped;
+  const rows = await select<RenegotiationRow & { status: string }>(
+    `SELECT n.*, r.status FROM renegotiations n JOIN requests r ON r.id = n.request_id
+     WHERE n.parent_request_id IN (${marks(parentRequestIds)}) ORDER BY n.created_at DESC, n.episode DESC`,
+    [...parentRequestIds],
+  );
+  for (const row of rows) {
+    const list = grouped.get(row.parent_request_id) ?? [];
+    list.push({ ...toRenegotiation(row), status: row.status as RequestStatus });
+    grouped.set(row.parent_request_id, list);
+  }
+  return grouped;
+}
+
+/** Names the request was escalated to (FR-15), from the `escalated` audit entries; no account ids. */
+export async function escalationsByRequest(requestIds: readonly string[]): Promise<Map<string, string[]>> {
+  if (requestIds.length === 0) return new Map();
+  const rows = await select<{ entity_id: string; payload: unknown }>(
+    `SELECT entity_id, payload FROM audit_log WHERE entity_type = 'request' AND action = 'escalated' AND entity_id IN (${marks(requestIds)})`,
+    [...requestIds],
+  );
+  return new Map(rows.map((row) => [row.entity_id, escalatedNames(parseJson<unknown>(row.payload, null))]));
+}
+
+/** Rejected or failed requests whose escalation comment failed and was never posted (FR-15 retry). */
+export async function pendingEscalations(limit = 20): Promise<string[]> {
+  const rows = await select<{ id: string }>(
+    `SELECT r.id FROM requests r
+     WHERE r.status IN ('rejected', 'failed')
+       AND EXISTS (SELECT 1 FROM audit_log a WHERE a.entity_type = 'request' AND a.entity_id = r.id AND a.action = 'escalation-failed')
+       AND NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.entity_type = 'request' AND a.entity_id = r.id AND a.action = 'escalated')
+     ORDER BY r.created_at DESC LIMIT ${Math.floor(limit)}`,
+  );
+  return rows.map((row) => row.id);
+}
 
 /** Requests whose source issue or provider deliverable is `issueKey`, newest first. */
 export async function requestsForIssue(issueKey: string): Promise<DependencyRequest[]> {

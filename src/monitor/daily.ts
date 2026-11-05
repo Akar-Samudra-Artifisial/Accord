@@ -1,6 +1,9 @@
 import { InvocationError, InvocationErrorCode, type AsyncEvent } from '@forge/events';
 import { monitorDeps, parseMonitorEvent, scheduleMonitor } from './deps';
 import { monitorProviderTeam, type MonitorTeamResult } from './monitor';
+import { retryEscalations } from '../negotiation/orchestrator';
+import { pendingEscalations } from '../negotiation/store';
+import { productionDeps } from '../negotiation/deps';
 
 /**
  * Daily contract monitor (scheduledTrigger `accord-daily-monitor`). Only fans out:
@@ -9,6 +12,13 @@ import { monitorProviderTeam, type MonitorTeamResult } from './monitor';
 export async function dailyMonitorHandler(): Promise<{ statusCode: number }> {
   const teams = await scheduleMonitor('schedule', null);
   console.log(`accord-monitor scheduled ${teams.length} provider team(s)`);
+  // FR-15: escalation comments that failed earlier are posted now (idempotent per request).
+  try {
+    const retried = await retryEscalations(productionDeps, await pendingEscalations());
+    if (retried.length) console.log(`accord-monitor retried ${retried.length} escalation(s): ${retried.map((r) => `${r.requestId} ${r.status}`).join(', ')}`);
+  } catch (error) {
+    console.error('accord-monitor escalation retry failed', error instanceof Error ? error.message : String(error));
+  }
   return { statusCode: 204 };
 }
 

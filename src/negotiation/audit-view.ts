@@ -1,6 +1,15 @@
 import { formatDate, formatDateRange } from '../format/dates';
 import type { AuditEntry } from './store';
 
+/** Contact names stored in an `escalated` audit payload (FR-15); never account ids. */
+export function escalatedNames(payload: unknown): string[] {
+  const contacts = payload && typeof payload === 'object' ? (payload as { contacts?: unknown }).contacts : undefined;
+  if (!Array.isArray(contacts)) return [];
+  return contacts
+    .map((contact) => (contact && typeof contact === 'object' ? (contact as { name?: unknown }).name : undefined))
+    .filter((name): name is string => typeof name === 'string' && name !== '');
+}
+
 /** One row of the Audit tab: only safe, human-readable fields (no raw account ids or issue lists). */
 export interface AuditRow {
   id: number;
@@ -36,6 +45,16 @@ const LABELS: Record<string, string> = {
   'contract-applied': 'Contract in effect',
   'status-changed': 'Contract status changed',
   'comment-failed': 'Jira comment failed',
+  'renegotiation-opened': 'Renegotiation opened',
+  'renegotiation-skipped': 'Renegotiation not opened',
+  'contract:due-date': 'Deliverable due date moved',
+  'contract-superseded': 'Contract superseded',
+  cancelled: 'Request cancelled',
+  escalated: 'Escalated',
+  'escalation-skipped': 'Escalation not possible',
+  'suggestion-created': 'Request suggested from a Jira link',
+  'suggestion-dismissed': 'Suggestion dismissed',
+  'suggestion-converted': 'Suggestion turned into a request',
 };
 
 const record = (payload: unknown): Record<string, unknown> =>
@@ -79,6 +98,14 @@ function summaryOf(entry: AuditEntry, context: AuditViewContext): string {
       const agreed = record(p.agreed);
       return `Agreed ${formatDateRange(text(agreed.min), text(agreed.max))}`;
     }
+    case 'renegotiation-opened':
+      return text(p.note);
+    case 'escalated': {
+      const names = escalatedNames(p);
+      return names.length ? `Escalated to ${names.join(', ')} after the request was ${text(p.trigger)}` : '';
+    }
+    case 'cancelled':
+      return text(p.reason).slice(0, 120);
     case 'status-changed':
       return `${text(p.from)} → ${text(p.to)}; projected ${formatDate(text(p.projectedDate), 'beyond the planning horizon')}, agreed by ${formatDate(text(p.agreedDateMax))}`;
     default:
