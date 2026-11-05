@@ -5,6 +5,7 @@ All notable changes are recorded here. The format follows Keep a Changelog; vers
 ## [Unreleased]
 
 ### Fixed
+- Rovo agents: Accord Broker and Accord Team Delegate write issue keys as clickable links, using the issue URL from the action output (a key without a URL stays plain text). The Broker's "What do we owe other teams" answer is explicitly limited to contracts where the team is the provider.
 - A new contract on freshly seeded demo data was At risk right after it was applied (agreed Nov 15, projected Nov 29) and the deal sheet had only one option: the planner now uses the contract monitor's projection for every request, not only renegotiations, so it never offers a date the monitor already projects as missed. On the seed data a short-notice request gets "on time with a shift" plus "later", and "Reset demo bugs" brings the contract back On track.
 - Shifting work for an option now moves it out of the active and next sprint when that is what lowers the monitor's projection, instead of into the next sprint where it still counted.
 - A renegotiation after "Add critical bugs to Payments" on fresh seed data offered only "Later date": shiftable work in the next sprint (which the monitor counts as work ahead) can now be moved out too, so the deal sheet also offers "On time with a shift". Red-line work, including the demo bugs, is never moved.
