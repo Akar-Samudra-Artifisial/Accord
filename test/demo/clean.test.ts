@@ -22,7 +22,6 @@ class FakeCleanPort implements DemoCleanPort {
   linkAudit = new Map<number, { blocker: string; blocked: string }>();
   issues = new Map<string, FakeIssue>();
   links = new Map<string, { blocker: string; blocked: string }>();
-  suggestions = 0;
   writes: string[] = [];
   audits: Array<{ action: string; payload: unknown }> = [];
 
@@ -48,12 +47,53 @@ class FakeCleanPort implements DemoCleanPort {
   async sprintDemoBugs() {
     return [...this.issues.entries()].filter(([, issue]) => issue.demoBug && issue.inSprint).map(([key]) => key);
   }
+  /** Issues Jira refuses to move; a batch containing one fails as a whole, like the Agile API. */
+  failMoves = new Set<string>();
+  /** Open sprint each issue sits in (absent/null = backlog). */
+  sprintOf = new Map<string, string | null>();
+  private refuse(issueKeys: readonly string[]) {
+    const bad = issueKeys.find((key) => this.failMoves.has(key));
+    if (bad) throw new Error(`Issue ${bad} cannot be moved`);
+  }
   async moveToBacklog(issueKeys: readonly string[]) {
+    this.refuse(issueKeys);
     for (const key of issueKeys) {
       this.writes.push(`backlog:${key}`);
       const issue = this.issues.get(key);
       if (issue) issue.inSprint = false;
+      this.sprintOf.set(key, null);
     }
+  }
+  origins: Array<{ id: number; requestId: string; issueKey: string; fromSprintId: string | null; toSprintId?: string | null }> = [];
+  sprintStates: Record<string, 'active' | 'future' | 'closed'> = { '411': 'active', '412': 'future', '400': 'closed' };
+  async moveToSprint(sprintId: string, issueKeys: readonly string[]) {
+    this.refuse(issueKeys);
+    for (const key of issueKeys) {
+      this.writes.push(`sprint:${sprintId}:${key}`);
+      this.sprintOf.set(key, sprintId);
+    }
+  }
+  async shiftOrigins(requestIds: readonly string[]) {
+    const orphan = (requestId: string) => !this.requests.some((r) => r.id === requestId);
+    return this.origins
+      .filter((o) => requestIds.includes(o.requestId) || orphan(o.requestId))
+      .map(({ id, issueKey, fromSprintId, toSprintId }) => ({ id, issueKey, fromSprintId, toSprintId }));
+  }
+  async sprintState(sprintId: string) {
+    return this.sprintStates[sprintId] ?? null;
+  }
+  async issuesInSprint(sprintId: string) {
+    return new Set([...this.sprintOf].filter(([, sprint]) => sprint === sprintId).map(([key]) => key));
+  }
+  async inOpenSprints(issueKeys: readonly string[]) {
+    return new Set(issueKeys.filter((key) => this.sprintOf.get(key)));
+  }
+  async sprintArchivedDeliverables() {
+    return [...this.issues.entries()].filter(([, issue]) => issue.labels.includes(ARCHIVED_LABEL) && issue.inSprint).map(([key]) => key);
+  }
+  suggestionRows: Array<{ id: number; blockedIssueKey: string; blockerIssueKey: string; status: string }> = [];
+  async linkSuggestions() {
+    return this.suggestionRows.map(({ id, blockedIssueKey, blockerIssueKey }) => ({ id, blockedIssueKey, blockerIssueKey }));
   }
   async issueState(issueKey: string) {
     const issue = this.issues.get(issueKey);
@@ -89,12 +129,20 @@ class FakeCleanPort implements DemoCleanPort {
     this.writes.push(`uncomment:${issueKey}:${commentId}`);
     this.comments.set(issueKey, (this.comments.get(issueKey) ?? []).filter((c) => c.id !== commentId));
   }
-  async deleteRows(scope: { requestIds: readonly string[]; contractIds: readonly number[] }) {
+  async deleteRows(scope: {
+    requestIds: readonly string[];
+    contractIds: readonly number[];
+    shiftOriginIds: readonly number[];
+    reopenSuggestionIds: readonly number[];
+  }) {
     this.requests = this.requests.filter((r) => !scope.requestIds.includes(r.id));
     this.contracts = this.contracts.filter((c) => !scope.contractIds.includes(c.id));
-    const suggestions = this.suggestions;
-    this.suggestions = 0;
-    return { suggestions };
+    this.origins = this.origins.filter((o) => !scope.shiftOriginIds.includes(o.id));
+    const before = this.suggestionRows.length;
+    this.suggestionRows = this.suggestionRows
+      .filter((s) => scope.reopenSuggestionIds.includes(s.id))
+      .map((s) => ({ ...s, status: 'open' }));
+    return { suggestions: before - this.suggestionRows.length };
   }
   async audit(action: string, _actor: string | null, payload: unknown) {
     this.audits.push({ action, payload });
@@ -125,7 +173,7 @@ describe('cleanDemoData', () => {
     port.issues.set('PAY-7', { labels: ['accord-demo-bug'], done: false, inSprint: true, demoBug: true });
     port.links.set('L1', { blocker: 'ACPAY-18', blocked: 'ACMOB-4' });
     port.links.set('L-foreign', { blocker: 'PAY-1', blocked: 'MOB-2' });
-    port.suggestions = 3;
+    port.suggestionRows = [1, 2, 3].map((id) => ({ id, blockedIssueKey: `ACMOB-${id}`, blockerIssueKey: `ACPAY-${id}`, status: 'converted' }));
     port.commentMarkers = ['ACMOB-3', 'ACPAY-21', 'ACMOB-3', 'MOB-9'];
     port.comments.set('ACMOB-3', [
       { id: '10', authorAccountId: 'app-accord' },
@@ -182,7 +230,7 @@ describe('cleanDemoData', () => {
     const result = await cleanDemoData(port, 'user-1', admin);
 
     expect(result.projects).toEqual(['ACMOB', 'ACPAY']);
-    expect(result.summary).toBe('Cleaned: 1 request, 1 contract, 1 link, 2 bugs reset, 3 comments removed');
+    expect(result.summary).toBe('Cleaned: 1 request, 1 contract, 1 link, 2 bugs reset, 3 comments removed, restored 0 moved issues');
     expect(result.deliverablesArchived).toBe(1);
     expect(result.suggestions).toBe(3);
     expect(port.writes.every((write) => /:(ACMOB|ACPAY)-|^unlink:L1$/.test(write))).toBe(true);
@@ -203,9 +251,122 @@ describe('cleanDemoData', () => {
 
     const again = await cleanDemoData(port, 'user-1', admin);
 
-    expect(again.summary).toBe('Cleaned: 0 requests, 0 contracts, 0 links, 0 bugs reset, 0 comments removed');
+    expect(again.summary).toBe('Cleaned: 0 requests, 0 contracts, 0 links, 0 bugs reset, 0 comments removed, restored 0 moved issues');
     expect(again.deliverablesArchived).toBe(0);
     expect(port.writes).toEqual([]);
+  });
+
+  it('puts shifted demo issues back to their earliest recorded sprint, skips closed sprints and foreign issues', async () => {
+    port.origins = [
+      { id: 1, requestId: 'r1', issueKey: 'ACPAY-4', fromSprintId: '411' },
+      { id: 2, requestId: 'r1', issueKey: 'ACPAY-10', fromSprintId: '412' },
+      { id: 3, requestId: 'r1', issueKey: 'ACPAY-7', fromSprintId: '400' },
+      { id: 4, requestId: 'r1', issueKey: 'ACPAY-8', fromSprintId: null },
+      { id: 5, requestId: 'r1', issueKey: 'PAY-3', fromSprintId: '411' },
+      // A later shift of the same issue (from where the first one put it) never wins.
+      { id: 6, requestId: 'r2', issueKey: 'ACPAY-4', fromSprintId: '412' },
+      { id: 7, requestId: 'r-foreign', issueKey: 'ACPAY-9', fromSprintId: '411' },
+    ];
+    port.requests.push({ id: 'r2', requesterTeamId: 'team-mob', providerTeamId: 'team-pay' });
+    for (const key of ['ACPAY-4', 'ACPAY-10', 'ACPAY-7', 'ACPAY-8', 'ACPAY-9']) port.issues.set(key, { labels: [], done: false, inSprint: false, demoBug: false });
+
+    const result = await cleanDemoData(port, 'user-1', admin);
+
+    expect(result.issuesRestored).toBe(3);
+    expect(result.summary).toMatch(/, restored 3 moved issues$/);
+    expect(port.writes).toEqual(expect.arrayContaining(['sprint:411:ACPAY-4', 'sprint:412:ACPAY-10', 'backlog:ACPAY-8']));
+    expect(port.writes).not.toContain('sprint:412:ACPAY-4');
+    expect(port.writes.some((w) => w.includes('ACPAY-7') || w.includes('ACPAY-9') || w.endsWith(':PAY-3'))).toBe(false);
+    expect(result.notRestored[0]).toBe('ACPAY-7 stayed where it is: the sprint it came from is closed or no longer exists.');
+    // Records of cleaned requests are gone: a second run restores nothing.
+    port.writes = [];
+    expect((await cleanDemoData(port, 'user-1', admin)).issuesRestored).toBe(0);
+    expect(port.writes).toEqual([]);
+  });
+
+  describe('shifted issues that cannot simply go back', () => {
+    const issue = (done = false) => ({ labels: [], done, inSprint: false, demoBug: false });
+
+    beforeEach(() => {
+      // Shift put all four in the backlog (toSprintId null); ACPAY-6 went to sprint 412.
+      port.origins = [
+        { id: 1, requestId: 'r1', issueKey: 'ACPAY-4', fromSprintId: '411', toSprintId: null },
+        { id: 2, requestId: 'r1', issueKey: 'ACPAY-5', fromSprintId: '411', toSprintId: null },
+        { id: 3, requestId: 'r1', issueKey: 'ACPAY-10', fromSprintId: '412', toSprintId: null },
+        { id: 4, requestId: 'r1', issueKey: 'ACPAY-12', fromSprintId: '412', toSprintId: null },
+        { id: 5, requestId: 'r1', issueKey: 'ACPAY-6', fromSprintId: '411', toSprintId: '412' },
+      ];
+      for (const key of ['ACPAY-4', 'ACPAY-5', 'ACPAY-10', 'ACPAY-12', 'ACPAY-6']) port.issues.set(key, issue());
+      port.sprintOf.set('ACPAY-6', '412');
+    });
+
+    it('one issue Jira refuses or that was deleted does not stop the clean; its record stays for the retry', async () => {
+      port.failMoves.add('ACPAY-5');
+      port.issues.delete('ACPAY-12');
+
+      const result = await cleanDemoData(port, 'user-1', admin);
+
+      expect(result.issuesRestored).toBe(3);
+      expect(port.sprintOf.get('ACPAY-4')).toBe('411');
+      expect(port.sprintOf.get('ACPAY-10')).toBe('412');
+      expect(port.sprintOf.get('ACPAY-6')).toBe('411');
+      expect(result.summary).toMatch(/restored 3 moved issues, 1 could not be moved back \(ACPAY-5\)$/);
+      expect(result.notRestored[0]).toBe('Could not move ACPAY-5 back; run Clean demo data again to retry.');
+      // The request rows are still deleted; only the failed issue's record is kept, the deleted issue's is gone.
+      expect(port.requests.map((r) => r.id)).toEqual(['r-foreign']);
+      expect(port.origins.map((o) => o.issueKey)).toEqual(['ACPAY-5']);
+
+      // Retry once Jira accepts the move: the orphaned record is found and settled.
+      port.failMoves.clear();
+      const again = await cleanDemoData(port, 'user-1', admin);
+      expect(again.issuesRestored).toBe(1);
+      expect(port.sprintOf.get('ACPAY-5')).toBe('411');
+      expect(port.origins).toEqual([]);
+    });
+
+    it('skips Done issues and issues someone moved after the shift', async () => {
+      port.issues.set('ACPAY-4', issue(true));
+      port.sprintOf.set('ACPAY-5', '412'); // moved by hand from the backlog into Sprint 42
+      port.sprintOf.set('ACPAY-6', null); // moved by hand from Sprint 42 to the backlog
+
+      const result = await cleanDemoData(port, 'user-1', admin);
+
+      expect(result.issuesRestored).toBe(2);
+      expect(result.summary).toMatch(/restored 2 moved issues, skipped 3 \(ACPAY-4, ACPAY-5, ACPAY-6\)$/);
+      expect(port.writes.some((w) => /ACPAY-(4|5|6)$/.test(w))).toBe(false);
+      expect(result.notRestored).toEqual(
+        expect.arrayContaining(['Skipped ACPAY-4: already Done.', 'Skipped ACPAY-5, ACPAY-6: moved by someone after the shift, so left where it is now.']),
+      );
+      expect(port.origins).toEqual([]);
+    });
+  });
+
+  it('takes Accord deliverables out of their sprint before archiving them, also ones archived by an earlier clean', async () => {
+    port.issues.set('ACPAY-25', { labels: ['accord', ARCHIVED_LABEL], done: true, inSprint: true, demoBug: false });
+    port.issues.set('PAY-25', { labels: ['accord', ARCHIVED_LABEL], done: true, inSprint: true, demoBug: false });
+
+    await cleanDemoData(port, 'user-1', admin);
+
+    expect(port.writes.indexOf('backlog:ACPAY-18')).toBeLessThan(port.writes.indexOf('archive:ACPAY-18'));
+    expect(port.writes.indexOf('backlog:ACPAY-18')).toBeGreaterThanOrEqual(0);
+    expect(port.issues.get('ACPAY-18')?.inSprint).toBe(false);
+    expect(port.issues.get('ACPAY-25')?.inSprint).toBe(false);
+    expect(port.issues.get('PAY-25')?.inSprint).toBe(true);
+  });
+
+  it('shows a suggestion again when its blocks link still exists and deletes the others', async () => {
+    port.links.set('L7', { blocker: 'ACPAY-3', blocked: 'ACMOB-1' });
+    port.suggestionRows = [
+      { id: 7, blockedIssueKey: 'ACMOB-1', blockerIssueKey: 'ACPAY-3', status: 'converted' },
+      { id: 8, blockedIssueKey: 'ACMOB-2', blockerIssueKey: 'ACPAY-2', status: 'dismissed' },
+    ];
+
+    const result = await cleanDemoData(port, 'user-1', admin);
+
+    expect(result.suggestionsReopened).toBe(1);
+    expect(result.suggestions).toBe(1);
+    expect(port.suggestionRows).toEqual([{ id: 7, blockedIssueKey: 'ACMOB-1', blockerIssueKey: 'ACPAY-3', status: 'open' }]);
+    expect(port.links.has('L7')).toBe(true);
   });
 
   it('skips deliverables Accord did not create', async () => {

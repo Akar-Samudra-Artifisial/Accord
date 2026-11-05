@@ -132,8 +132,9 @@ describe('previewChanges', () => {
       baseInput({ request: { size: 'L', neededBy: '2026-11-29', costClass: 'fixed-date' }, commitments: shiftScenario() }),
     ).options.map((o) => stored(o));
     const changes = previewChanges({ title: 'Refund API', sourceIssueKey: 'MOB-7' }, 'PAY', shift);
-    expect(changes.map((c) => c.kind)).toEqual(['create-issue', 'link', 'move-sprint', 'move-sprint', 'move-sprint', 'move-sprint', 'comment']);
-    expect(changes[2].text).toBe('Move PAY-1 to Sprint 43.');
+    expect(changes.map((c) => c.kind)).toEqual(['create-issue', 'link', 'move-sprint', 'move-sprint', 'move-sprint', 'move-sprint', 'move-sprint', 'comment']);
+    expect(changes[2].text).toBe('Plan the new issue in Sprint 42.');
+    expect(changes[3].text).toBe('Move PAY-1 to Sprint 43.');
   });
 });
 

@@ -123,7 +123,10 @@ describe('contract option', () => {
     await applyContract(h.deps, REQUEST_ID);
     const chosen = h.store.options.find((o) => o.id === best);
     expect(h.jira.created[0].dueDate).toBe(chosen?.dateRange.max);
-    expect(h.jira.sprintMoves).toEqual([{ sprintId: 's3', keys: ['PAY-1', 'PAY-11', 'PAY-2', 'PAY-3'] }]);
+    expect(h.jira.sprintMoves).toEqual([
+      { sprintId: 's2', keys: ['PAY-100'] },
+      { sprintId: 's3', keys: ['PAY-1', 'PAY-11', 'PAY-2', 'PAY-3'] },
+    ]);
   });
 });
 

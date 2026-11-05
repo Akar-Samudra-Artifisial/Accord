@@ -456,8 +456,19 @@ describe('applyContract', () => {
       { projectKey: 'PAY', key: 'PAY-100', labels: ['accord', contractLabel(REQUEST_ID)], dueDate: '2026-11-29' },
     ]);
     expect(h.jira.links).toEqual([{ blocker: 'PAY-100', blocked: 'MOB-7' }]);
-    expect(h.jira.sprintMoves).toEqual([{ sprintId: 's3', keys: ['PAY-1', 'PAY-11', 'PAY-2', 'PAY-3'] }]);
+    // The deliverable goes into the sprint the option's date ends (Sprint 42, Nov 29), then the shift.
+    expect(h.jira.sprintMoves).toEqual([
+      { sprintId: 's2', keys: ['PAY-100'] },
+      { sprintId: 's3', keys: ['PAY-1', 'PAY-11', 'PAY-2', 'PAY-3'] },
+    ]);
+    expect(h.store.shiftOrigins.map((o) => [o.issueKey, o.fromSprintId, o.toSprintId])).toEqual([
+      ['PAY-1', 's1', 's3'],
+      ['PAY-11', 's2', 's3'],
+      ['PAY-2', 's1', 's3'],
+      ['PAY-3', 's1', 's3'],
+    ]);
     expect(h.jira.comments.slice(commentsBefore).map((c) => c.issueKey)).toEqual(['MOB-7', 'PAY-100']);
+    expect(h.jira.comments.at(-1)?.text).toContain('Deliverable planned in Sprint 42.');
     expect(h.store.contracts).toMatchObject([{ optionId: best, deliverableIssueKey: 'PAY-100', status: 'on-track' }]);
     expect(h.store.edges).toEqual([{ contractId: h.store.contracts[0].id, from: MOB.id, to: PAY.id }]);
     expect((await h.store.getRequest(REQUEST_ID))?.status).toBe('contracted');
@@ -493,10 +504,11 @@ describe('applyContract', () => {
     // Force a re-run of every step even though the request is already contracted.
     await h.store.transition(REQUEST_ID, ['contracted'], 'approved');
     await applyContract(h.deps, REQUEST_ID);
-    expect(snapshot).toEqual({ created: 1, links: 1, moves: 1, comments: h.jira.comments.length });
+    // Two sprint moves: the deliverable into its sprint and the shifted work.
+    expect(snapshot).toEqual({ created: 1, links: 1, moves: 2, comments: h.jira.comments.length });
     expect(h.jira.created).toHaveLength(1);
     expect(h.jira.links).toHaveLength(1);
-    expect(h.jira.sprintMoves).toHaveLength(1);
+    expect(h.jira.sprintMoves).toHaveLength(2);
     expect(h.jira.comments).toHaveLength(snapshot.comments);
     expect(h.store.contracts).toHaveLength(1);
     expect(h.store.edges).toHaveLength(1);
@@ -512,6 +524,22 @@ describe('applyContract', () => {
     option.shifted = [{ key: 'PAY-1', costClass: 'intangible', toSprintId: 'projected-3' }];
     await applyContract(h.deps, REQUEST_ID);
     expect(h.jira.backlogMoves).toEqual([['PAY-1']]);
-    expect(h.jira.sprintMoves).toEqual([]);
+    expect(h.jira.sprintMoves).toEqual([{ sprintId: 's2', keys: ['PAY-100'] }]);
+  });
+
+  it('leaves a new deliverable in the backlog when its planned sprint does not exist in Jira yet, and says so', async () => {
+    const h = harness({ commitments: shiftScenario() });
+    const best = await approved(h);
+    const option = h.store.options.find((o) => o.id === best)!;
+    option.trace = option.trace.map((step) =>
+      step.step === 'deliverable-sprint'
+        ? { ...step, step: 'deliverable-backlog', values: { ...step.values, deliverableSprint: 'Projected sprint 1' }, sources: [{ type: 'sprint', ref: 'projected-1' }] }
+        : step,
+    );
+    await applyContract(h.deps, REQUEST_ID);
+    expect(h.jira.sprintMoves.flatMap((m) => m.keys)).not.toContain('PAY-100');
+    expect(h.jira.backlogMoves.flat()).not.toContain('PAY-100');
+    expect(h.jira.comments.at(-1)?.text).toContain('stays in the backlog: it is planned for Projected sprint 1, which does not exist in Jira yet.');
+    expect(h.store.auditLog.find((e) => e.action === 'contract:deliverable-sprint')?.payload).toMatchObject({ backlog: true });
   });
 });

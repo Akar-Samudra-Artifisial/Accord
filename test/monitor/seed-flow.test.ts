@@ -108,6 +108,7 @@ import type { CharterTemplateInput } from '../../src/confluence/charter';
 import { runSeedStep, type SeedContext } from '../../src/demo/seed';
 import { DEMO_LABEL, DEMO_TEAMS, SEED_STEPS, addDaysIso } from '../../src/demo/seed-data';
 import { CRITICAL_BUGS, bugsUntilAtRisk } from '../../src/demo/critical-bugs';
+import { cleanDemoData, type DemoCleanPort } from '../../src/demo/clean';
 import { MOB, PAY, REQUEST_ID, harness, request } from '../negotiation/fakes';
 
 /** The judge path on a fresh site: "Seed demo data" run today, then a request from MOB to Payments. */
@@ -208,7 +209,11 @@ async function seededFlow() {
   const applyJiraMoves = () => {
     const moved = new Map(h.jira.sprintMoves.flatMap((move) => move.keys.map((key) => [key, move.sprintId] as const)));
     const backlog = new Set(h.jira.backlogMoves.flat());
-    commitments = commitments
+    // Deliverables Accord created and planned into a sprint now show up on the board like any issue.
+    const created = h.jira.created
+      .filter((issue) => moved.has(issue.key) && !commitments.some((item) => item.key === issue.key))
+      .map((issue) => toWorkItem(jiraIssue(issue.key, { summary: 'Deliverable', issueType: 'Story', priority: 'Medium', labels: issue.labels, dueDate: issue.dueDate })));
+    commitments = [...commitments, ...created]
       .filter((item) => !backlog.has(item.key))
       .map((item) => (moved.has(item.key) ? { ...item, sprintId: moved.get(item.key) } : item))
       .filter((item) => sprints.some((sprint) => sprint.id === item.sprintId));
@@ -283,6 +288,64 @@ describe('judge path on freshly seeded demo data (2026-11-05)', () => {
 
     flow.resetBugs();
     expect((await monitorProviderTeam(deps, PAY.id)).evaluated[0]).toMatchObject({ to: 'on-track' });
+  });
+
+  it('the deliverable is planned in Sprint 41 (the sprint of the agreed date), the contract is On track, and Clean puts the shifted work back', async () => {
+    const flow = await seededFlow();
+    const { h, store, deps } = flow;
+    const [sprint41, sprint42] = (await deps.jira.commitments(PAY)).sprints;
+    await h.store.insertRequest(request({ size: 'S', neededBy: addDaysIso(TODAY, 21), sourceIssueKey: 'MOB-1' }));
+    await runRound1(h.deps, REQUEST_ID);
+    await runRound2(h.deps, REQUEST_ID);
+    await approveRecommended(h, REQUEST_ID);
+    expect((await applyContract(h.deps, REQUEST_ID)).status).toBe('done');
+    const contract = (await h.store.getContract(REQUEST_ID))!;
+    expect(contract.agreedDateMax).toBe(sprint41.endDate);
+    const deliverable = contract.deliverableIssueKey!;
+    expect(h.jira.sprintMoves).toContainEqual({ sprintId: sprint41.id, keys: [deliverable] });
+    expect(h.jira.comments.find((c) => c.issueKey === deliverable)?.text).toContain('Deliverable planned in Payments Sprint 41.');
+    // The shift: nothing later exists in Jira, so the four planned items go to the backlog.
+    expect(h.jira.backlogMoves.flat().sort()).toEqual(['PAY-10', 'PAY-12', 'PAY-4', 'PAY-5']);
+
+    flow.applyJiraMoves();
+    store.contracts.push({ contract: { ...contract, status: 'on-track' }, request: (await h.store.getRequest(REQUEST_ID))! });
+    // Invariant with the deliverable inside Sprint 41: planner and monitor agree, the new contract is On track.
+    const evaluated = (await monitorProviderTeam(deps, PAY.id)).evaluated[0];
+    expect(evaluated).toMatchObject({ to: 'on-track' });
+    expect(evaluated.projectedDate! <= contract.agreedDateMax).toBe(true);
+
+    // "Clean demo data" restores PAY-4/5 to Sprint 41 and PAY-10/12 to Sprint 42 from the recorded origins.
+    const positions = new Map<string, string | null>(['PAY-4', 'PAY-5', 'PAY-10', 'PAY-12'].map((key) => [key, null]));
+    const port: DemoCleanPort = {
+      accordProjects: async () => [{ projectKey: 'MOB', name: 'Mobile' }, { projectKey: 'PAY', name: 'Payments' }],
+      teamIdOf: async (key) => `team-${key}`,
+      requestsBetween: async () => [{ id: REQUEST_ID, requesterTeamId: MOB.id, providerTeamId: PAY.id }],
+      contractsOf: async () => [],
+      recordedDeliverables: async () => new Set(),
+      recordedLinks: async () => [],
+      sprintDemoBugs: async () => [],
+      moveToBacklog: async (keys) => keys.forEach((key) => positions.set(key, null)),
+      moveToSprint: async (sprintId, keys) => keys.forEach((key) => positions.set(key, sprintId)),
+      shiftOrigins: async (ids) => h.store.shiftOrigins.filter((o) => ids.includes(o.requestId)),
+      sprintState: async (id) => [sprint41, sprint42].find((s) => s.id === id)?.state ?? null,
+      issuesInSprint: async (id) => new Set([...positions].filter(([, sprint]) => sprint === id).map(([key]) => key)),
+      inOpenSprints: async (keys) => new Set(keys.filter((key) => positions.get(key))),
+      sprintArchivedDeliverables: async () => [],
+      linkSuggestions: async () => [],
+      issueState: async (key) => (positions.has(key) ? { labels: [], done: false } : null),
+      archiveDeliverable: async () => 'done',
+      blocksLinkIds: async () => [],
+      deleteLink: async () => {},
+      appAccountId: async () => null,
+      commentedIssues: async () => [],
+      listComments: async () => [],
+      deleteComment: async () => {},
+      deleteRows: async () => ({ suggestions: 0 }),
+      audit: async () => {},
+    };
+    const cleaned = await cleanDemoData(port, 'lead-payments', async () => true);
+    expect(cleaned.summary).toContain('restored 4 moved issues');
+    expect(Object.fromEntries(positions)).toEqual({ 'PAY-4': sprint41.id, 'PAY-5': sprint41.id, 'PAY-10': sprint42.id, 'PAY-12': sprint42.id });
   });
 
   it('critical bugs → At risk → renegotiation offers ≥2 options; the recommended one applied is On track with the bugs still in', async () => {

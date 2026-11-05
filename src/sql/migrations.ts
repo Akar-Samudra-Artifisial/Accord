@@ -262,6 +262,33 @@ export const MIGRATIONS: ReadonlyArray<{ name: string; statement: string }> = [
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`,
   },
+  {
+    // Where apply-contract found each issue it shifted (sprint id, NULL = backlog), so "Clean demo data" can put
+    // it back. One row per request and issue; the lowest id per issue is its earliest known position.
+    name: 'v021_create_shift_origins',
+    statement: `CREATE TABLE IF NOT EXISTS shift_origins (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      request_id VARCHAR(64) NOT NULL,
+      issue_key VARCHAR(64) NOT NULL,
+      from_sprint_id VARCHAR(64) NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_shift_origin (request_id, issue_key),
+      INDEX idx_shift_origins_issue (issue_key)
+    )`,
+  },
+  {
+    // Where apply-contract put each shifted issue (sprint id, NULL = backlog), so "Clean demo data" leaves an issue
+    // alone that a person has moved since. Own table instead of ALTER TABLE shift_origins (migrations stay idempotent);
+    // a shift_origins row without one here was recorded before this table (destination unknown).
+    name: 'v022_create_shift_targets',
+    statement: `CREATE TABLE IF NOT EXISTS shift_targets (
+      request_id VARCHAR(64) NOT NULL,
+      issue_key VARCHAR(64) NOT NULL,
+      to_sprint_id VARCHAR(64) NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (request_id, issue_key)
+    )`,
+  },
 ];
 
 /** Applies pending migrations; safe to call on every cold start. */

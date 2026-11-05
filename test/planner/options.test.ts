@@ -55,7 +55,7 @@ describe('planOptions', () => {
       ['on-time-with-shift', '2026-11-15'],
       ['later', '2026-11-29'],
     ]);
-    expect(result.options[0].shifted).toEqual([{ key: 'PAY-20', costClass: 'intangible', toSprintId: 's3' }]);
+    expect(result.options[0].shifted).toEqual([{ key: 'PAY-20', costClass: 'intangible', toSprintId: 's3', fromSprintId: 's2' }]);
     // Without the monitor rule, Sprint 42 work after the need is no candidate.
     expect(planOptions({ ...input, workAhead: undefined }).options.map((o) => o.kind)).toEqual(['on-time']);
   });
@@ -144,7 +144,7 @@ describe('planOptions', () => {
       }),
     );
     const shift = result.options.find((o) => o.kind === 'on-time-with-shift')!;
-    expect(shift.shifted).toEqual([{ key: 'PAY-20', costClass: 'intangible', toSprintId: 'projected-1' }]);
+    expect(shift.shifted).toEqual([{ key: 'PAY-20', costClass: 'intangible', toSprintId: 'projected-1', fromSprintId: 's2' }]);
     expect(shift.consequences.provider).toBe('Moves 1 planned item to the backlog: PAY-20.');
     expect(explainOption(shift)).toContain('from Sprint 42 to the backlog.');
     expect(explainOption(shift)).not.toMatch(/later sprint|Projected sprint/);

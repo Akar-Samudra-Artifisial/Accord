@@ -495,7 +495,7 @@ const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>;
         <SectionMessage appearance="success">
           <Text>{notice}</Text>
           {notRestored.map((item) => (
-            <Text key={item}>{`Not restored: ${item}`}</Text>
+            <Text key={item}>{item}</Text>
           ))}
         </SectionMessage>
       ) : null}

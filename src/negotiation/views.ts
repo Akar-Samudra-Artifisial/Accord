@@ -1,6 +1,6 @@
 import { formatDate, formatDateRange } from '../format/dates';
 import { plural } from '../format/text';
-import { buildConsequences, explainOption, type TraceStep } from '../planner';
+import { buildConsequences, deliverableSprintOf, explainOption, type TraceStep } from '../planner';
 import type { Team } from '../teams/repository';
 import {
   approvalState,
@@ -38,6 +38,8 @@ export interface OptionView {
   explanation: string;
   trace: Array<{ step: string; text: string; sources: TraceStep['sources'] }>;
   jiraChanges: JiraChange[];
+  /** Sprint the planner put the deliverable in (null for options stored before it was recorded). */
+  deliverableSprint: { name: string; inJira: boolean } | null;
 }
 
 export interface DealSheetView {
@@ -131,6 +133,16 @@ export function appliedChanges(
       issueKeys: [deliverable, request.sourceIssueKey],
     },
   ];
+  const sprint = option.deliverableSprint;
+  if (sprint) {
+    changes.push({
+      kind: sprint.inJira ? 'move-sprint' : 'move-backlog',
+      text: sprint.inJira
+        ? `Planned ${deliverable} in ${sprint.name}.`
+        : `${provenance.deliverableCreated ? 'Kept' : 'Moved'} ${deliverable} ${provenance.deliverableCreated ? 'in' : 'to'} the backlog (planned for ${sprint.name}, which does not exist in Jira yet).`,
+      issueKeys: [deliverable],
+    });
+  }
   for (const item of option.shifted) {
     const visible = item.key !== RESTRICTED;
     changes.push({
@@ -188,6 +200,7 @@ function toOptionView(
   const consequences = buildConsequences(option.kind, option.trace);
   const shiftSteps = option.trace.filter((step) => step.step === 'shift');
   const r = (text: string) => redact(text, option.trace, visible);
+  const deliverableSprint = deliverableSprintOf(option.trace);
   return {
     id: option.id,
     kind: option.kind,
@@ -209,6 +222,7 @@ function toOptionView(
     explanation: r(explainOption(option)),
     trace: option.trace.map((step) => ({ step: step.step, text: r(step.text), sources: redactSources(step.sources, visible) })),
     jiraChanges: previewChanges(request, provider.jiraProjectKey, option, existingDeliverable).map((change) => ({ ...change, text: r(change.text) })),
+    deliverableSprint: deliverableSprint ? { name: deliverableSprint.name, inJira: deliverableSprint.inJira } : null,
   };
 }
 

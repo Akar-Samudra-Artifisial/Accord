@@ -220,6 +220,13 @@ export class MemoryStore implements NegotiationStore {
       })
       .map((r) => r.requestId);
   }
+  shiftOrigins: Array<{ id: number; requestId: string; issueKey: string; fromSprintId: string | null; toSprintId: string | null }> = [];
+  async recordShiftOrigins(requestId: string, origins: ReadonlyArray<{ issueKey: string; fromSprintId: string | null; toSprintId: string | null }>) {
+    for (const origin of origins) {
+      if (this.shiftOrigins.some((o) => o.requestId === requestId && o.issueKey === origin.issueKey)) continue;
+      this.shiftOrigins.push({ id: this.nextId++, requestId, ...origin });
+    }
+  }
 }
 
 export class FakeJira implements JiraPort {

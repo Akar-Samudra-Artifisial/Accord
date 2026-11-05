@@ -128,6 +128,8 @@ export interface ShiftedItem {
   key: string;
   costClass: CostClass;
   toSprintId: string;
+  /** Jira sprint the issue sat in when planned; null = backlog. Missing on options stored before this field. */
+  fromSprintId?: string | null;
 }
 
 export interface PlannerOption {
