@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Accord">
+  <!-- Two parties (brackets) enclosing the agreement (check). Transparent background. -->
+  <path d="M7.5 3.5 H5.5 A2 2 0 0 0 3.5 5.5 V18.5 A2 2 0 0 0 5.5 20.5 H7.5" stroke="#1868DB" stroke-width="2.75"/>
+  <path d="M16.5 3.5 H18.5 A2 2 0 0 1 20.5 5.5 V18.5 A2 2 0 0 1 18.5 20.5 H16.5" stroke="#6E5DC6" stroke-width="2.75"/>
+  <path d="M7.75 12.25 L10.75 15.25 L16.25 8.75" stroke="#22A06B" stroke-width="3"/>
+</svg>

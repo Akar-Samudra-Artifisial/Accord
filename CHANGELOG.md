@@ -4,6 +4,9 @@ All notable changes are recorded here. The format follows Keep a Changelog; vers
 
 ## [Unreleased]
 
+### Added
+- App icon (two brackets for the two teams around a check for the agreement, transparent background, Atlassian blue, purple and green) in `assets/icon/` as SVG source with PNG exports. The manifest uses it for the issue panel, the global page, the Confluence byline item and both Rovo agents, and the app now has a short description.
+
 ### Fixed
 - Rovo agents: Accord Broker and Accord Team Delegate write issue keys as clickable links, using the issue URL from the action output (a key without a URL stays plain text). The Broker's "What do we owe other teams" answer is explicitly limited to contracts where the team is the provider.
 - A new contract on freshly seeded demo data was At risk right after it was applied (agreed Nov 15, projected Nov 29) and the deal sheet had only one option: the planner now uses the contract monitor's projection for every request, not only renegotiations, so it never offers a date the monitor already projects as missed. On the seed data a short-notice request gets "on time with a shift" plus "later", and "Reset demo bugs" brings the contract back On track.
