@@ -1,8 +1,8 @@
 import { route } from '@forge/api';
-import { isNotFound, jira, type Principal } from '../atlassian/http';
+import { AtlassianApiError, isNotFound, jira, type Principal } from '../atlassian/http';
 import { keyCandidates, pickKey, type KeyState } from '../demo/seed-data';
 import { UserFacingError } from '../errors';
-import { myPermissions } from '../jira/permissions';
+import { accountProjectPermissions, myPermissions, type JiraPermission } from '../jira/permissions';
 import { findScrumBoard } from '../jira/boards';
 import { listSprints, toPlannerSprint } from '../jira/sprints';
 import { listSprintIssues, searchIssues } from '../jira/issues';
@@ -35,9 +35,11 @@ import {
 } from '../capacity/aggregate';
 import { CAPACITY_WINDOW, isValidIsoDate, type Sprint, type WorkItem } from '../planner';
 import {
+  audit,
   getCharter,
   listTeams,
   listThroughput,
+  saveApproverCheck,
   saveCharter,
   saveThroughput,
   setCharterPage,
@@ -64,24 +66,68 @@ interface JiraProject {
   lead?: { accountId: string };
 }
 
-export async function getProject(projectKey: string): Promise<JiraProject> {
-  return jira<JiraProject>(route`/rest/api/3/project/${projectKey}`);
+export async function getProject(projectKey: string, as: Principal = 'app'): Promise<JiraProject> {
+  return jira<JiraProject>(route`/rest/api/3/project/${projectKey}`, { as });
 }
 
 /**
  * Team administration (register, charter page, charter sync) is limited to the Jira
- * project lead or users with ADMINISTER_PROJECTS on that project (checked as the user).
+ * project lead or users with ADMINISTER_PROJECTS on that project. The project is read as the
+ * user, and "does not exist" and "not allowed" give the same message, so the check reveals nothing.
  * Returns the project so callers can reuse its lead.
  */
 export async function requireProjectAdmin(projectKey: string, accountId: string | undefined): Promise<JiraProject> {
   if (!accountId) throw new UserFacingError('A signed-in Jira user is required.');
-  const project = await getProject(projectKey);
+  const denied = () =>
+    new UserFacingError(`Only the project lead or a project administrator of ${projectKey} can change its Accord team setup.`);
+  let project: JiraProject;
+  try {
+    project = await getProject(projectKey, 'user');
+  } catch (error) {
+    if (error instanceof AtlassianApiError && [401, 403, 404].includes(error.status)) throw denied();
+    throw error;
+  }
   if (project.lead?.accountId === accountId) return project;
   const granted = await myPermissions({ projectKey: project.key }, ['ADMINISTER_PROJECTS']);
-  if (!granted.has('ADMINISTER_PROJECTS')) {
-    throw new UserFacingError(`Only the project lead or a project administrator of ${project.key} can change its Accord team setup.`);
-  }
+  if (!granted.has('ADMINISTER_PROJECTS')) throw denied();
   return project;
+}
+
+/** Jira permissions a charter approver needs in the team's project to be counted (NFR-3). */
+export const APPROVER_PERMISSIONS = ['BROWSE_PROJECTS', 'SCHEDULE_ISSUES'] as const satisfies readonly JiraPermission[];
+
+/**
+ * Splits the approvers mentioned on a charter page into those that hold `APPROVER_PERMISSIONS` in
+ * the team project and those that do not. Anyone who can edit the page can mention anyone, so the
+ * page alone never makes someone an approver. A failed check ignores the approver (fail closed).
+ */
+export async function partitionApprovers(
+  approvers: readonly string[],
+  hasPermissions: (accountId: string) => Promise<boolean>,
+): Promise<{ kept: string[]; ignored: string[] }> {
+  const kept: string[] = [];
+  const ignored: string[] = [];
+  for (const accountId of approvers) {
+    let allowed = false;
+    try {
+      allowed = await hasPermissions(accountId);
+    } catch (error) {
+      console.error('Accord approver permission check failed', error instanceof Error ? error.message : String(error));
+    }
+    (allowed ? kept : ignored).push(accountId);
+  }
+  return { kept, ignored };
+}
+
+const sameMembers = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id) => b.includes(id));
+
+/** Checks an approver's project permissions as the app (`permissions/check` with `accountId`). */
+async function approverPermissionCheck(team: Team): Promise<(accountId: string) => Promise<boolean>> {
+  const project = await getProject(team.jiraProjectKey);
+  return async (accountId) => {
+    const held = await accountProjectPermissions(accountId, project.id, APPROVER_PERMISSIONS);
+    return APPROVER_PERMISSIONS.every((permission) => held.has(permission));
+  };
 }
 
 /** Registers (or refreshes) a Jira project as an Accord team. Requires a Scrum board. */
@@ -104,12 +150,45 @@ export async function registerTeam(projectKey: string): Promise<Team> {
   });
 }
 
-/** Reads the charter page, validates it and stores the parsed result. */
-export async function syncCharter(team: Team): Promise<StoredCharter | null> {
+/**
+ * Reads the charter page, validates it and stores the parsed result. Approvers without
+ * `APPROVER_PERMISSIONS` in the team project are dropped (count shown in Teams); a change of the
+ * effective approver list since the last sync is audited and shown as "Approvers changed".
+ */
+export async function syncCharter(
+  team: Team,
+  hasPermissions?: (accountId: string) => Promise<boolean>,
+): Promise<StoredCharter | null> {
   if (!team.charterPageId) return null;
   const page = await getPage(team.charterPageId);
-  const validation: CharterValidation = validateCharterStorage(page.body?.storage?.value ?? '');
+  const parsed: CharterValidation = validateCharterStorage(page.body?.storage?.value ?? '');
+  let validation = parsed;
+  let ignored: string[] = [];
+  if (parsed.charter) {
+    const check = hasPermissions ?? (await approverPermissionCheck(team));
+    const split = await partitionApprovers(parsed.charter.approvers, check);
+    ignored = split.ignored;
+    validation = { ...parsed, charter: { ...parsed.charter, approvers: split.kept } };
+  }
+  const previous = (await getCharter(team.id))?.charter?.approvers ?? null;
+  const current = validation.charter?.approvers ?? null;
+  const changed = previous !== null && current !== null && !sameMembers(previous, current);
   await saveCharter(team.id, page.id, page.version.number, validation);
+  await saveApproverCheck(team.id, ignored, changed);
+  if (changed) {
+    await audit('team', team.id, 'charter-approvers-changed', null, {
+      pageVersion: page.version.number,
+      before: previous,
+      after: current,
+    });
+  }
+  if (ignored.length > 0) {
+    await audit('team', team.id, 'charter-approvers-ignored', null, {
+      pageVersion: page.version.number,
+      ignored,
+      required: APPROVER_PERMISSIONS,
+    });
+  }
   return getCharter(team.id);
 }
 

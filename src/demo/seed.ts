@@ -4,6 +4,7 @@ import { AtlassianApiError, isNotFound, jira, type Principal } from '../atlassia
 import { createSprint, listSprints, moveIssuesToSprint, updateSprint, type JiraSprint } from '../jira/sprints';
 import { createIssues, listSprintIssues, searchIssues } from '../jira/issues';
 import { UserFacingError } from '../errors';
+import { plural } from '../format/text';
 import { run, select } from '../sql/db';
 import { getTeamByKey, saveThroughput, type Team } from '../teams/repository';
 import { createCharterPage, getProject, registerTeam, resolveCharterSpace, TeamSetupError } from '../teams/service';
@@ -133,6 +134,40 @@ export async function getSeedPlan(adoptExisting = false): Promise<SeedPlan> {
   return { projects, space: { key: space.key, state: space.state === 'missing' ? 'create' : 'accord' } };
 }
 
+/** Jira admin rights of the signed-in user (checked as the user). */
+export interface SeedAccess {
+  siteAdmin: boolean;
+  projectAdmin(projectKey: string): Promise<boolean>;
+}
+
+/**
+ * Who may run the demo seed (NFR-3): a Jira site admin, or an admin (ADMINISTER_PROJECTS) of every
+ * existing target project. Creating a project needs a site admin. Using an existing project that
+ * Accord did not create (`adopted`) needs an admin of that project; the seed then marks it as
+ * Accord's (`accord.demo` property, written as that user). Returns null when allowed.
+ */
+export async function seedAccessError(plan: SeedPlan, access: SeedAccess): Promise<string | null> {
+  if (access.siteAdmin) return null;
+  for (const project of plan.projects) {
+    if (project.state === 'create') {
+      return `Only a Jira site admin can create the demo project ${project.projectKey}.`;
+    }
+    if (!(await access.projectAdmin(project.projectKey))) {
+      return `Only a Jira site admin or a project administrator of ${project.projectKey} can seed the demo data.`;
+    }
+  }
+  return null;
+}
+
+/** Throws unless the signed-in user may seed; returns the plan the seed will use. */
+export async function requireSeedAccess(accountId: string | undefined, adoptExisting: boolean, access: () => Promise<SeedAccess>): Promise<SeedPlan> {
+  if (!accountId) throw new UserFacingError('A signed-in Jira user is required.');
+  const plan = await getSeedPlan(adoptExisting);
+  const error = await seedAccessError(plan, await access());
+  if (error) throw new UserFacingError(error);
+  return plan;
+}
+
 /** Jira key of an existing demo project (e.g. Payments → PAY or ACPAY). */
 export async function existingDemoProjectKey(slot: DemoTeam['slot']): Promise<string> {
   const plan = await resolveDemoProject(demoTeam(slot), false);
@@ -188,6 +223,15 @@ async function ensureProject(team: DemoTeam, context: SeedContext): Promise<stri
     await jira(route`/rest/api/3/project/${projectKey}/properties/${DEMO_PROJECT_PROPERTY}`, {
       method: 'PUT',
       body: { createdBy: 'accord', createdAt: new Date().toISOString() },
+    });
+  } else if (plan.state === 'adopted') {
+    // Hand-made project used on request: the caller (a project admin, checked by the resolver) marks it
+    // as Accord's. Written as the user, so this fails for anyone who cannot administer the project.
+    const as = context.projectPrincipals.includes('user') ? 'user' : 'app';
+    await jira(route`/rest/api/3/project/${projectKey}/properties/${DEMO_PROJECT_PROPERTY}`, {
+      method: 'PUT',
+      as,
+      body: { createdBy: 'adopted', adoptedAt: new Date().toISOString() },
     });
   }
   const registered = await registerTeam(projectKey);
@@ -282,7 +326,7 @@ async function ensureSprintsAndIssues(team: DemoTeam, context: SeedContext): Pro
       endDate: sprintTime(dates.activeEnd, true),
     });
   }
-  return `${projectKey}: sprint ${active.id} (${activeKeys.length} issues, active), sprint ${next.id} (${nextKeys.length} issues)`;
+  return `${projectKey}: sprint ${active.id} (${plural(activeKeys.length, 'issue')}, active), sprint ${next.id} (${plural(nextKeys.length, 'issue')})`;
 }
 
 async function ensureCharter(team: DemoTeam, context: SeedContext): Promise<string> {
@@ -290,8 +334,9 @@ async function ensureCharter(team: DemoTeam, context: SeedContext): Promise<stri
   const result = await createCharterPage(stored, {
     teamName: team.name,
     ...team.charter,
-    // The account that triggered the seed approves; otherwise the project lead.
-    approverAccountIds: [context.leadAccountId ?? stored.leadAccountId].filter((id): id is string => Boolean(id)),
+    // The Jira project lead approves (for projects the seed created, that is the account that ran it);
+    // never the caller of an existing project they do not lead.
+    approverAccountIds: [stored.leadAccountId ?? context.leadAccountId].filter((id): id is string => Boolean(id)),
   });
   const status = result.charter?.valid ? 'Charter valid' : `missing: ${result.charter?.missingFields.join(', ')}`;
   return `${stored.jiraProjectKey}: page ${result.pageId} ${result.created ? 'created' : 'reused'} (${status})`;

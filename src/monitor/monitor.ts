@@ -1,4 +1,6 @@
 import { projectContract, type CapacityRange, type IsoDate, type ProjectionInput, type Size, type Sprint, type WorkItem } from '../planner';
+import { formatDate, formatDateRange } from '../format/dates';
+import { plural } from '../format/text';
 import { quotedTitle } from '../negotiation/orchestrator';
 import type { Contract, ContractStatus, DependencyRequest } from '../negotiation/types';
 import type { Team } from '../teams/repository';
@@ -108,20 +110,21 @@ export function statusComment(
   pessimistic: number,
 ): string {
   const link = `${request.sourceIssueKey} → ${contract.deliverableIssueKey ?? 'deliverable pending'}`;
-  const projected = evaluation.projectedDate ?? 'beyond the planning horizon';
-  const agreed = `${contract.agreedDateMin} to ${contract.agreedDateMax}`;
+  const projected = formatDate(evaluation.projectedDate, 'beyond the planning horizon');
+  const agreedKind = contract.agreedDateMin === contract.agreedDateMax ? 'date' : 'range';
+  const agreedDates = formatDateRange(contract.agreedDateMin, contract.agreedDateMax);
   const subject = `the contract for ${quotedTitle(request.title)} (${link})`;
   if (evaluation.to === 'at-risk') {
     const workload =
       audience === 'provider'
-        ? ` ${evaluation.workAhead} issues are planned ahead of and including this work at a pessimistic ${pessimistic} issues per sprint.`
+        ? ` ${plural(evaluation.workAhead, 'issue')} ${evaluation.workAhead === 1 ? 'is' : 'are'} planned ahead of and including this work at a pessimistic ${plural(pessimistic, 'issue')} per sprint.`
         : '';
     return (
-      `Accord monitor: ${subject} is now at risk. Projected delivery is ${projected}; the agreed range is ${agreed}.` +
+      `Accord monitor: ${subject} is now at risk. Projected delivery is ${projected}; the agreed ${agreedKind} is ${agreedDates}.` +
       `${workload} Both teams may want to review the plan together.`
     );
   }
-  return `Accord monitor: ${subject} is back on track. Projected delivery is ${projected}, within the agreed range ${agreed}.`;
+  return `Accord monitor: ${subject} is back on track. Projected delivery is ${projected}, within the agreed ${agreedKind} ${agreedDates}.`;
 }
 
 /** Monitored contracts of a provider plus the capacity and commitments every evaluation uses. */

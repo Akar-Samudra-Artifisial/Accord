@@ -23,6 +23,7 @@ import {
   xcss,
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
+import { formatDate, formatDateRange } from '../format/dates';
 import { requestIsMoving, useBoundedPolling } from './polling';
 
 /** Shared deal sheet modal (issue panel and global page Inbox). */
@@ -119,8 +120,7 @@ const featuredCardStyle = xcss({
 
 const ISSUE_KEY_IN_TEXT = /\b[A-Z][A-Z0-9_]+-\d+\b/g;
 
-const dateRange = (range: { min: string; max: string }) =>
-  !range.min ? 'No date offered' : range.min === range.max ? range.min : `${range.min} – ${range.max}`;
+const dateRange = (range: { min: string; max: string }) => formatDateRange(range.min, range.max, 'No date offered');
 
 const teamName = (sheet: DealSheet, side: Side) => (side === 'requester' ? sheet.requester.name : sheet.provider.name);
 
@@ -420,7 +420,7 @@ export const DealSheetModal = ({
               <LinkedText
                 text={
                   `${sheet.requester.name} asks ${sheet.provider.name} for size ${sheet.request.size}` +
-                  `${sheet.request.minSize ? ` (minimum ${sheet.request.minSize})` : ''} by ${sheet.request.neededBy}, for ${sheet.request.sourceIssueKey}.`
+                  `${sheet.request.minSize ? ` (minimum ${sheet.request.minSize})` : ''} by ${formatDate(sheet.request.neededBy)}, for ${sheet.request.sourceIssueKey}.`
                 }
                 keys={[sheet.request.sourceIssueKey]}
               />

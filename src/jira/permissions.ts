@@ -1,7 +1,14 @@
 import { route } from '@forge/api';
 import { jira, type Principal } from '../atlassian/http';
 
-export type JiraPermission = 'ADMINISTER' | 'ADMINISTER_PROJECTS' | 'BROWSE_PROJECTS' | 'ADD_COMMENTS';
+export type JiraPermission =
+  | 'ADMINISTER'
+  | 'ADMINISTER_PROJECTS'
+  | 'BROWSE_PROJECTS'
+  | 'ADD_COMMENTS'
+  | 'SCHEDULE_ISSUES'
+  | 'CREATE_ISSUES'
+  | 'LINK_ISSUES';
 
 interface MyPermissionsResponse {
   permissions: Record<string, { havePermission?: boolean } | undefined>;
@@ -25,4 +32,31 @@ export async function myPermissions(
         : route`/rest/api/3/mypermissions?permissions=${list}`;
   const response = await jira<MyPermissionsResponse>(path, { as });
   return new Set(permissions.filter((permission) => response.permissions[permission]?.havePermission === true));
+}
+
+interface BulkPermissionsResponse {
+  projectPermissions?: Array<{ permission: string; projects?: number[] }>;
+}
+
+/**
+ * Project permissions another account holds (`POST /rest/api/3/permissions/check` with `accountId`,
+ * called as the app). Returns the permissions held on the project with id `projectId`.
+ */
+export async function accountProjectPermissions(
+  accountId: string,
+  projectId: string,
+  permissions: readonly JiraPermission[],
+): Promise<Set<JiraPermission>> {
+  const id = Number(projectId);
+  const response = await jira<BulkPermissionsResponse>(route`/rest/api/3/permissions/check`, {
+    method: 'POST',
+    as: 'app',
+    body: { accountId, projectPermissions: [{ permissions, projects: [id] }] },
+  });
+  const held = new Set<JiraPermission>();
+  for (const entry of response.projectPermissions ?? []) {
+    const permission = permissions.find((candidate) => candidate === entry.permission);
+    if (permission && (entry.projects ?? []).includes(id)) held.add(permission);
+  }
+  return held;
 }

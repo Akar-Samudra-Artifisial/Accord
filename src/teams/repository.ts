@@ -161,6 +161,36 @@ export async function getCharter(teamId: string): Promise<StoredCharter | null> 
   };
 }
 
+/** Result of the last approver permission check at charter sync. */
+export interface ApproverCheck {
+  /** Number of approvers on the page that were ignored for missing Jira permissions (ids stay server side). */
+  ignoredCount: number;
+  /** When the effective approver list last changed (UTC, SQL timestamp); null if never. */
+  approversChangedAt: string | null;
+}
+
+export async function saveApproverCheck(teamId: string, ignored: readonly string[], approversChanged: boolean): Promise<void> {
+  await run(
+    `INSERT INTO charter_approver_checks (team_id, ignored_approvers, approvers_changed_at, updated_at)
+     VALUES (?, ?, ${approversChanged ? 'CURRENT_TIMESTAMP' : 'NULL'}, CURRENT_TIMESTAMP)
+     ON DUPLICATE KEY UPDATE ignored_approvers = VALUES(ignored_approvers),
+       approvers_changed_at = ${approversChanged ? 'CURRENT_TIMESTAMP' : 'approvers_changed_at'}, updated_at = CURRENT_TIMESTAMP`,
+    [teamId, JSON.stringify(ignored)],
+  );
+}
+
+export async function getApproverCheck(teamId: string): Promise<ApproverCheck> {
+  const rows = await select<{ ignored_approvers: unknown; approvers_changed_at: string | null }>(
+    'SELECT ignored_approvers, approvers_changed_at FROM charter_approver_checks WHERE team_id = ?',
+    [teamId],
+  );
+  const row = rows[0];
+  return {
+    ignoredCount: row ? parseJson<string[]>(row.ignored_approvers, []).length : 0,
+    approversChangedAt: row?.approvers_changed_at ? String(row.approvers_changed_at) : null,
+  };
+}
+
 interface SampleRow {
   sprint_id: string;
   sprint_name: string;

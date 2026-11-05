@@ -1,5 +1,8 @@
 import { planOptions, isValidIsoDate, type CostClass, type PlannerInput, type PlannerOption, type PlannerVariation, type Size } from '../planner';
 import { UserFacingError } from '../errors';
+import type { JiraPermission } from '../jira/permissions';
+import { formatDateRange } from '../format/dates';
+import { plural } from '../format/text';
 import type { Team } from '../teams/repository';
 import {
   approvalState,
@@ -159,7 +162,7 @@ export async function runRound1(deps: NegotiationDeps, requestId: string): Promi
     });
   }
   await deps.queue.push({ type: 'round2', requestId });
-  return { status: 'done', detail: `${offers.length} offers` };
+  return { status: 'done', detail: plural(offers.length, 'offer') };
 }
 
 interface BrokerOutput {
@@ -180,42 +183,31 @@ export async function runRound2(deps: NegotiationDeps, requestId: string): Promi
   } else {
     const requesterRound = await deps.store.getRound(requestId, 1, 'requester-delegate');
     if (requesterRound?.status !== 'done') throw new NegotiationError(`Round 1 of ${requestId} is not finished`);
-    const [requester, provider] = await Promise.all([
-      requireTeam(deps, request.requesterTeamId),
-      requireTeam(deps, request.providerTeamId),
-    ]);
+    const provider = await requireTeam(deps, request.providerTeamId);
     const ranked = rankOptions(await deps.store.listOptions(requestId));
     if (ranked.length === 0) throw new NegotiationError(`No options stored for ${requestId}`);
     const recommended = ranked[0];
     output = await runRound(deps, requestId, 2, 'broker', { optionCount: ranked.length }, async () => {
       await deps.store.setRecommended(requestId, recommended.id);
+      // Only the source issue is commented: its creator was checked for ADD_COMMENTS there. Provider issues
+      // the option would shift are not commented, because the requester has no permission on them (NFR-3);
+      // the provider lead sees them in the deal sheet and Inbox.
       await commentOnce(
         deps,
         requestId,
         `comment:deal-sheet:${request.sourceIssueKey}`,
         request.sourceIssueKey,
-        `Accord: the deal sheet for ${quotedTitle(request.title)} (${provider.name}) is ready with ${ranked.length} options. ` +
-          `Recommended delivery ${recommended.dateRange.min || 'none'} to ${recommended.dateRange.max || 'none'}. ` +
+        `Accord: the deal sheet for ${quotedTitle(request.title)} (${provider.name}) is ready with ${plural(ranked.length, 'option')}. ` +
+          `Recommended delivery: ${formatDateRange(recommended.dateRange.min, recommended.dateRange.max, 'no date offered')}. ` +
           'Nothing changes in Jira until both team leads approve the same option in the Accord panel.',
       );
-      const shiftedKeys = [...new Set(recommended.shifted.map((item) => item.key))];
-      for (const key of shiftedKeys) {
-        await commentOnce(
-          deps,
-          requestId,
-          `comment:deal-sheet:${key}`,
-          key,
-          `Accord: the recommended option for ${requester.name}'s request ${quotedTitle(request.title)} (${request.sourceIssueKey}) ` +
-            `would move this issue to a later sprint. It only moves if the ${provider.name} and ${requester.name} leads both approve.`,
-        );
-      }
       return { rankedOptionIds: ranked.map((option) => option.id), recommendedOptionId: recommended.id };
     });
   }
   if (await deps.store.transition(requestId, ['negotiating'], 'awaiting-approval')) {
     await deps.store.audit('request', requestId, 'deal-sheet-ready', null, output);
   }
-  return { status: 'done', detail: `${output.rankedOptionIds.length} options, recommended ${output.recommendedOptionId}` };
+  return { status: 'done', detail: `${plural(output.rankedOptionIds.length, 'option')}, recommended ${output.recommendedOptionId}` };
 }
 
 /**
@@ -269,6 +261,42 @@ async function concurrentOutcome(deps: NegotiationDeps, requestId: string): Prom
   throw changedMeanwhile(current?.status);
 }
 
+/** Jira permissions an approver needs for the changes apply-contract makes on their side. */
+export const SIDE_PERMISSIONS = {
+  // Provider: the deliverable is created and shifted issues move sprints in the provider project.
+  provider: ['CREATE_ISSUES', 'SCHEDULE_ISSUES'],
+  // Requester: the source issue gets the blocks link and the contract comment.
+  requester: ['LINK_ISSUES', 'ADD_COMMENTS'],
+} as const satisfies Record<Side, readonly JiraPermission[]>;
+
+export interface PermissionCheck {
+  scope: string;
+  required: JiraPermission[];
+  granted: JiraPermission[];
+  missing: JiraPermission[];
+}
+
+/** Checks, as the signed-in user, the Jira permissions behind their side of the contract. */
+async function checkApproverPermissions(deps: NegotiationDeps, request: DependencyRequest, team: Team, side: Side): Promise<PermissionCheck> {
+  const required: JiraPermission[] = [...SIDE_PERMISSIONS[side]];
+  const scope = side === 'provider' ? { projectKey: team.jiraProjectKey } : { issueKey: request.sourceIssueKey };
+  const label = side === 'provider' ? `project ${team.jiraProjectKey}` : request.sourceIssueKey;
+  let granted: Set<JiraPermission>;
+  try {
+    granted = await deps.userPermissions(scope, required);
+  } catch (error) {
+    // Fail closed: without a successful check nothing is approved.
+    console.error(`Accord permission check for ${request.id} failed`, error instanceof Error ? error.message : String(error));
+    granted = new Set();
+  }
+  return {
+    scope: label,
+    required,
+    granted: required.filter((permission) => granted.has(permission)),
+    missing: required.filter((permission) => !granted.has(permission)),
+  };
+}
+
 /**
  * Records a human decision; two approvals of the same option enqueue apply-contract.
  * Races are settled by conditional SQL: a rejection first claims the status
@@ -296,6 +324,19 @@ export async function decide(deps: NegotiationDeps, input: DecisionInput): Promi
     await deps.store.audit('request', request.id, 'decision-denied', input.accountId, { side: input.side, teamId });
     throw new NegotiationError(`You are not an approver for ${team.name}. Approvers come from the team charter and the project lead.`);
   }
+  const permissionCheck = input.decision === 'approve' ? await checkApproverPermissions(deps, request, team, input.side) : null;
+  if (permissionCheck && permissionCheck.missing.length > 0) {
+    await deps.store.audit('request', request.id, 'decision-denied', input.accountId, {
+      side: input.side,
+      teamId,
+      rule: 'jira-permissions',
+      ...permissionCheck,
+    });
+    throw new NegotiationError(
+      `You cannot approve for ${team.name}: Accord applies the contract in Jira on your behalf, and you are missing ` +
+        `${permissionCheck.missing.join(', ')} on ${permissionCheck.scope}. Ask a Jira admin for these permissions.`,
+    );
+  }
   const reason = input.reason?.trim().slice(0, 1000) || null;
   const approval = { requestId: request.id, optionId: input.optionId, teamId, actorAccountId: input.accountId, decision: input.decision, reason };
 
@@ -322,7 +363,12 @@ export async function decide(deps: NegotiationDeps, input: DecisionInput): Promi
   if (!(await deps.store.addApproval(approval, 'awaiting-approval'))) {
     throw changedMeanwhile((await deps.store.getRequest(request.id))?.status);
   }
-  await deps.store.audit('request', request.id, 'approved', input.accountId, { optionId: input.optionId, teamId, side: input.side });
+  await deps.store.audit('request', request.id, 'approved', input.accountId, {
+    optionId: input.optionId,
+    teamId,
+    side: input.side,
+    permissions: permissionCheck,
+  });
 
   const state = approvalState(await deps.store.listApprovals(request.id), request.requesterTeamId, request.providerTeamId);
   if (state.agreedOptionId !== null) {
@@ -420,7 +466,7 @@ export async function applyContract(deps: NegotiationDeps, requestId: string): P
     });
   }
 
-  const agreed = `${dates.min} to ${dates.max}`;
+  const agreed = formatDateRange(dates.min, dates.max);
   await commentOnce(
     deps,
     requestId,

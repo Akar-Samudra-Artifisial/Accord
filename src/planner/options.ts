@@ -8,6 +8,7 @@ import {
 } from './cost';
 import { addDays, daysBetween, parseIsoDate } from './dates';
 import { buildConsequences, makeStep } from './explain';
+import { plural } from '../format/text';
 import type {
   DateRange,
   IsoDate,
@@ -338,7 +339,7 @@ function rejectOption(ctx: Context, reason: 'share' | 'red-line' | 'horizon', re
     rulesUsed = [...redLineRules];
     step = makeStep('reject-red-line', { neededBy: ctx.neededBy, rejectReason }, [{ type: 'charter', ref: 'redLines' }]);
   } else {
-    rejectReason = `no delivery date fits within the next ${ctx.slots.length} sprints`;
+    rejectReason = `no delivery date fits within the next ${plural(ctx.slots.length, 'sprint')}`;
     rulesUsed = [ctx.shareRule];
     step = makeStep('reject-horizon', { horizonSprints: ctx.slots.length, rejectReason }, [
       { type: 'charter', ref: 'maxExternalShare' },

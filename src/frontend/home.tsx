@@ -24,6 +24,8 @@ import ForgeReconciler, {
   Textfield,
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
+import { formatDate, formatDateRange, formatDateTime } from '../format/dates';
+import { plural } from '../format/text';
 import { DealSheetModal, StatusLozenge, type RequestStatus } from './dealsheet';
 import { changedKey, contractIsMoving, contractSignature, requestIsMoving, useBoundedPolling, useIdlePolling } from './polling';
 
@@ -34,7 +36,14 @@ interface TeamView {
   name: string;
   projectKey: string;
   boardId: number | null;
-  charter: { status: 'none' | 'valid' | 'invalid'; missing: string[]; pageId: string | null; url: string | null };
+  charter: {
+    status: 'none' | 'valid' | 'invalid';
+    missing: string[];
+    pageId: string | null;
+    url: string | null;
+    ignoredApprovers: number;
+    approversChangedAt: string | null;
+  };
   capacity: {
     pessimistic: number;
     realistic: number;
@@ -87,13 +96,37 @@ async function call<T>(key: string, payload?: Record<string, unknown>): Promise<
   }
 }
 
+const ApproverNotes = ({ charter }: { charter: TeamView['charter'] }) => (
+  <>
+    {charter.ignoredApprovers > 0 ? (
+      <Text>
+        {`${plural(charter.ignoredApprovers, 'approver')} ignored: missing Browse projects or Schedule issues permission in Jira.`}
+      </Text>
+    ) : null}
+    {charter.approversChangedAt ? (
+      <Inline space="space.050">
+        <Lozenge appearance="moved">Approvers changed</Lozenge>
+        <Text>{formatDateTime(charter.approversChangedAt)}</Text>
+      </Inline>
+    ) : null}
+  </>
+);
+
 const CharterStatus = ({ charter }: { charter: TeamView['charter'] }) => {
-  if (charter.status === 'valid') return <Lozenge appearance="success">Charter valid</Lozenge>;
+  if (charter.status === 'valid') {
+    return (
+      <Stack space="space.050">
+        <Lozenge appearance="success">Charter valid</Lozenge>
+        <ApproverNotes charter={charter} />
+      </Stack>
+    );
+  }
   if (charter.status === 'invalid') {
     return (
       <Stack space="space.050">
         <Lozenge appearance="removed">Charter incomplete</Lozenge>
         <Text>Missing: {charter.missing.join(', ')}</Text>
+        <ApproverNotes charter={charter} />
       </Stack>
     );
   }
@@ -230,6 +263,7 @@ const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>;
   const [action, setAction] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [leadState, setLeadState] = useState<DemoLeadState | null>(null);
+  const [seedBlocked, setSeedBlocked] = useState<string | null>(null);
 
   const loadLeadState = async () => {
     const result = await call<DemoLeadState>('getDemoLeadState');
@@ -237,11 +271,14 @@ const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>;
   };
 
   useEffect(() => {
-    call<{ steps: SeedStepStatus[]; plan: SeedPlan }>('getSeedStatus', { adoptExisting }).then((result) => {
-      if (!result.ok) return setError(result.error);
-      setSteps(result.steps);
-      setPlan(result.plan);
-    });
+    call<{ steps: SeedStepStatus[]; plan: SeedPlan | null; canSeed: boolean; reason: string | null }>('getSeedStatus', { adoptExisting }).then(
+      (result) => {
+        if (!result.ok) return setError(result.error);
+        setSteps(result.steps);
+        setPlan(result.plan);
+        setSeedBlocked(result.canSeed ? null : (result.reason ?? 'Only a Jira admin can seed the demo data.'));
+      },
+    );
   }, [adoptExisting]);
 
   useEffect(() => {
@@ -287,7 +324,7 @@ const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>;
       const sprint = result.sprintName ?? 'the active Payments sprint';
       setNotice(
         added.length
-          ? `Added ${added.length} critical bug${added.length === 1 ? '' : 's'} to ${sprint} — monitor running…`
+          ? `Added ${plural(added.length, 'critical bug')} to ${sprint} — monitor running…`
           : `${sprint} already has enough critical bugs to put ${result.deliverableIssueKey ?? 'the contract'} at risk — monitor running…`,
       );
     } else {
@@ -342,7 +379,7 @@ const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>;
         onChange={() => setAdoptExisting((value) => !value)}
       />
       <ButtonGroup label="Demo actions">
-        <Button appearance="primary" isDisabled={running || action !== null} onClick={() => setConfirmOpen(true)}>
+        <Button appearance="primary" isDisabled={running || action !== null || seedBlocked !== null} onClick={() => setConfirmOpen(true)}>
           Seed demo data
         </Button>
         <Button isDisabled={running || action !== null} onClick={() => void demoAction('addDemoBugs')}>
@@ -360,6 +397,7 @@ const DemoTab = ({ onSeeded, onMonitorQueued }: { onSeeded: () => Promise<void>;
           </Button>
         ) : null}
       </ButtonGroup>
+      {seedBlocked ? <Text color="color.text.subtle">{seedBlocked}</Text> : null}
       {leadState?.canManage ? (
         <Text>
           {`Demo project lead: ${leadState.projects.map((p) => `${p.projectKey} ${p.isLead ? '(you)' : '(someone else)'}`).join(', ')}. "Make me the demo lead" changes only the Accord demo projects.`}
@@ -513,7 +551,7 @@ const InboxTab = ({ onChanged, active, lastActivityAt }: LiveTabProps & { onChan
           cells: [
             { key: 'request', content: <Text>{`${item.title} (${item.sourceIssueKey})`}</Text> },
             { key: 'teams', content: <Text>{`${item.requester} → ${item.provider}`}</Text> },
-            { key: 'needed', content: <Text>{item.neededBy}</Text> },
+            { key: 'needed', content: <Text>{formatDate(item.neededBy)}</Text> },
             {
               key: 'status',
               content: (
@@ -657,12 +695,18 @@ const ContractsTab = ({ watch, active, lastActivityAt }: LiveTabProps & { watch:
             { key: 'contract', content: <Text>{row.title}</Text> },
             { key: 'teams', content: <Text>{`${row.requester} → ${row.provider}`}</Text> },
             { key: 'issues', content: <Text>{`${row.deliverableIssueKey ?? 'pending'} blocks ${row.sourceIssueKey}`}</Text> },
-            { key: 'agreed', content: <Text>{`${row.agreedDateMin} – ${row.agreedDateMax}`}</Text> },
+            { key: 'agreed', content: <Text>{formatDateRange(row.agreedDateMin, row.agreedDateMax)}</Text> },
             {
               key: 'projected',
               content: (
                 <Text>
-                  {row.projectedDate ?? (row.status === 'at-risk' ? 'Beyond planning horizon' : row.status === 'unknown' ? 'Not enough capacity data' : 'Not evaluated yet')}
+                  {row.projectedDate
+                    ? formatDate(row.projectedDate)
+                    : row.status === 'at-risk'
+                      ? 'Beyond planning horizon'
+                      : row.status === 'unknown'
+                        ? 'Not enough data'
+                        : 'Not evaluated yet'}
                 </Text>
               ),
             },
@@ -714,11 +758,17 @@ interface AuditRow {
 const AuditTab = () => {
   const [rows, setRows] = useState<AuditRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  // Bumped on every load: the table is remounted, because it did not show new rows on Refresh.
+  const [version, setVersion] = useState(0);
 
   const load = useCallback(async () => {
+    setRefreshing(true);
     const result = await call<{ entries: AuditRow[] }>('getAudit');
+    setRefreshing(false);
     if (result.ok) {
       setRows(result.entries);
+      setVersion((value) => value + 1);
       setError(null);
     } else setError(result.error);
   }, []);
@@ -739,9 +789,12 @@ const AuditTab = () => {
     <Stack space="space.200">
       <Inline space="space.100" alignBlock="center">
         <Text>Recent decisions and background steps for the teams you can access.</Text>
-        <Button onClick={() => void load()}>Refresh</Button>
+        <Button isDisabled={refreshing} onClick={() => void load()}>
+          {refreshing ? 'Refreshing…' : 'Refresh'}
+        </Button>
       </Inline>
       <DynamicTable
+        key={version}
         caption="Audit trail"
         head={{
           cells: [
@@ -755,7 +808,7 @@ const AuditTab = () => {
         rows={rows.map((row) => ({
           key: String(row.id),
           cells: [
-            { key: 'at', content: <Text>{row.at.replace('T', ' ').slice(0, 16)}</Text> },
+            { key: 'at', content: <Text>{formatDateTime(row.at)}</Text> },
             { key: 'subject', content: <Text>{row.subject}</Text> },
             { key: 'action', content: <Text>{row.action}</Text> },
             { key: 'actor', content: <Text>{row.actor}</Text> },

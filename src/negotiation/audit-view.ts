@@ -1,3 +1,4 @@
+import { formatDate, formatDateRange } from '../format/dates';
 import type { AuditEntry } from './store';
 
 /** One row of the Audit tab: only safe, human-readable fields (no raw account ids or issue lists). */
@@ -76,10 +77,10 @@ function summaryOf(entry: AuditEntry, context: AuditViewContext): string {
     }
     case 'contract-applied': {
       const agreed = record(p.agreed);
-      return `Agreed ${text(agreed.min)} to ${text(agreed.max)}`;
+      return `Agreed ${formatDateRange(text(agreed.min), text(agreed.max))}`;
     }
     case 'status-changed':
-      return `${text(p.from)} → ${text(p.to)}; projected ${text(p.projectedDate) || 'beyond the planning horizon'}, agreed by ${text(p.agreedDateMax)}`;
+      return `${text(p.from)} → ${text(p.to)}; projected ${formatDate(text(p.projectedDate), 'beyond the planning horizon')}, agreed by ${formatDate(text(p.agreedDateMax))}`;
     default:
       return '';
   }

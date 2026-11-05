@@ -3,6 +3,7 @@ import { addComment, createIssue, isBlocksFrom, listIssueLinks, linkBlocks, sear
 import { moveIssuesToBacklog, moveIssuesToSprint } from '../jira/sprints';
 import { getCharter, getTeamById, type Team } from '../teams/repository';
 import { loadCommitments, teamCapacity } from '../teams/service';
+import { myPermissions } from '../jira/permissions';
 import { sqlStore } from './store';
 import type { JiraPort, NegotiationDeps, QueuePort, TeamDirectory } from './types';
 import { MONITOR_QUEUE_KEY, type MonitorEvent } from '../monitor/monitor';
@@ -68,5 +69,7 @@ export const productionDeps: NegotiationDeps = {
     },
   },
   today: () => new Date().toISOString().slice(0, 10),
+  // Only `decide` uses this, and it is only called from resolvers (user context).
+  userPermissions: (scope, permissions) => myPermissions(scope, permissions, 'user'),
   allowSameApprover: process.env.ACCORD_DEMO_ALLOW_SAME_APPROVER === 'true',
 };

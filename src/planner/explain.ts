@@ -1,3 +1,5 @@
+import { betweenDates, formatDate } from '../format/dates';
+import { plural } from '../format/text';
 import type { OptionKind, TraceSource, TraceStep } from './types';
 
 type Values = Record<string, number | string>;
@@ -8,47 +10,47 @@ type Values = Record<string, number | string>;
  */
 const STEP_TEMPLATES: Readonly<Record<string, string>> = {
   capacity:
-    'Recent throughput gives {realistic} issues per sprint (realistic, median of {sampleCount} sprints) and {pessimistic} issues per sprint (pessimistic).',
+    'Recent throughput gives {realistic|issue} per sprint (realistic, median of {sampleCount|sprint}) and {pessimistic|issue} per sprint (pessimistic).',
   'limited-data':
-    'Only {sampleCount} sprints of history are available, so the lowest sprint ({pessimistic} issues) is used as the pessimistic value.',
+    'History covers only {sampleCount|sprint}, so the lowest sprint ({pessimistic|issue}) is used as the pessimistic value.',
   'share-cap':
-    'The charter reserves at most {sharePercent}% of pessimistic capacity for other teams, which is {cap} issues per sprint.',
-  requested: 'The request needs {requested} issues by {neededBy}.',
-  variation: 'Variation: the minimum part is evaluated {days} days earlier, by {neededByMin}.',
+    'The charter reserves at most {sharePercent}% of pessimistic capacity for other teams, which is {cap|issue} per sprint.',
+  requested: 'The request needs {requested|issue} by {neededBy}.',
+  variation: 'Variation: the minimum part is evaluated {days|day} earlier, by {neededByMin}.',
   'room-before-need':
-    'Before {neededBy}, {sprintCount} sprints have room for {usable} issues for this request after existing commitments.',
+    'Before {neededBy}, room for {usable|issue} for this request remains in {sprintCount|sprint} after existing commitments.',
   'on-time':
-    'Room for {requested} issues is available by {dateMax} (pessimistic) or {dateMin} (realistic) without moving planned work.',
+    'Room for {requested|issue} is available by {dateMax} (pessimistic) or {dateMin} (realistic) without moving planned work.',
   shift: 'This option moves {key} ({summary}) from {fromSprint} to {toSprint}.',
   'shift-total':
-    'Moving {shiftedCount} planned items ({shiftedKeys}) has a cost-of-delay weight of {shiftCost} and makes room for {requested} issues between {dateMin} and {dateMax}.',
+    'Moving {shiftedCount|planned item} ({shiftedKeys}) has a cost-of-delay weight of {shiftCost} and makes room for {requested|issue} {dateMin..dateMax}.',
   'red-line-kept': '{key} stays in place because the charter marks {rule} as a red line.',
   partial:
-    'The minimum part of {minSize} issues fits by {minDateMax}; the remaining {remainderSize} issues follow by {remainderDateMax}.',
+    'The minimum part of {minSize|issue} fits by {minDateMax}; the rest ({remainderSize|issue}) follows by {remainderDateMax}.',
   later:
-    'Without moving planned work, the earliest delivery is {dateMin} to {dateMax}, which is {daysLate} days after {neededBy}.',
+    'Without moving planned work, the earliest delivery is {dateMin..dateMax}, which is {daysLate|day} after {neededBy}.',
   'reject-share':
-    'Before {neededBy} the charter share allows at most {capTotal} issues for other teams, and the request needs {requested}.',
+    'Before {neededBy} the charter share allows at most {capTotal|issue} for other teams, and the request needs {requested}.',
   'reject-red-line': 'Only red-line work could make room before {neededBy}, and red-line work is never moved.',
-  'reject-horizon': 'No delivery date fits within the next {horizonSprints} sprints.',
+  'reject-horizon': 'No delivery date fits within the next {horizonSprints|sprint}.',
 };
 
 const CONSEQUENCE_TEMPLATES: Readonly<Record<OptionKind, { requester: string; provider: string }>> = {
   'on-time': {
-    requester: 'Delivery between {dateMin} and {dateMax}, on or before {neededBy}.',
-    provider: 'No planned work moves; {requested} issues use room reserved for other teams.',
+    requester: 'Delivery {dateMin..dateMax}, on or before {neededBy}.',
+    provider: 'No planned work moves; the request uses room for {requested|issue} reserved for other teams.',
   },
   'on-time-with-shift': {
-    requester: 'Delivery between {dateMin} and {dateMax}, on or before {neededBy}.',
-    provider: '{shiftedCount} planned items move to a later sprint: {shiftedKeys}.',
+    requester: 'Delivery {dateMin..dateMax}, on or before {neededBy}.',
+    provider: 'Moves {shiftedCount|planned item} to a later sprint: {shiftedKeys}.',
   },
   partial: {
     requester:
-      'The minimum {minSize} issues arrive by {minDateMax}; the remaining {remainderSize} issues by {remainderDateMax}.',
+      'The minimum part ({minSize|issue}) arrives by {minDateMax}; the rest ({remainderSize|issue}) by {remainderDateMax}.',
     provider: 'No planned work moves.',
   },
   later: {
-    requester: 'Delivery between {dateMin} and {dateMax}, {daysLate} days after {neededBy}.',
+    requester: 'Delivery {dateMin..dateMax}, {daysLate|day} after {neededBy}.',
     provider: 'No planned work moves.',
   },
   reject: {
@@ -57,13 +59,26 @@ const CONSEQUENCE_TEMPLATES: Readonly<Record<OptionKind, { requester: string; pr
   },
 };
 
+const ISO_DATE_VALUE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Fills placeholders from trace values: `{name}` (ISO dates shown as "Nov 29, 2026"; trace values
+ * stay ISO), `{name|noun}` for a count with a matching noun ("1 issue", "2 issues"), and
+ * `{min..max}` for a date span ("between Nov 20, 2026 and Nov 29, 2026", or "on Nov 29, 2026").
+ */
 export function renderTemplate(template: string, values: Values): string {
-  return template.replace(/\{(\w+)\}/g, (_match, name: string) => {
-    const value = values[name];
-    if (value === undefined) {
+  const value = (name: string) => {
+    const found = values[name];
+    if (found === undefined) {
       throw new Error(`Missing trace value "${name}" for template "${template}"`);
     }
-    return String(value);
+    return found;
+  };
+  return template.replace(/\{(\w+)(?:\.\.(\w+)|\|([\w ]+))?\}/g, (_match, name: string, spanEnd?: string, noun?: string) => {
+    const found = value(name);
+    if (spanEnd !== undefined) return betweenDates(String(found), String(value(spanEnd)));
+    if (noun !== undefined) return plural(Number(found), noun);
+    return typeof found === 'string' && ISO_DATE_VALUE.test(found) ? formatDate(found) : String(found);
   });
 }
 

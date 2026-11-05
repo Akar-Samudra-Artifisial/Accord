@@ -1,3 +1,4 @@
+import { formatDate, formatDateRange } from '../format/dates';
 import { buildConsequences, explainOption, type TraceStep } from '../planner';
 import type { Team } from '../teams/repository';
 import {
@@ -77,9 +78,13 @@ export function appliedChanges(
 ): AppliedChange[] {
   const deliverable = contract.deliverableIssueKey;
   if (!deliverable) return [];
-  const range = `${contract.agreedDateMin} to ${contract.agreedDateMax}`;
+  const range = formatDateRange(contract.agreedDateMin, contract.agreedDateMax);
   const changes: AppliedChange[] = [
-    { kind: 'create-issue', text: `Created ${deliverable} "${request.title}" in ${providerProjectKey}, due ${contract.agreedDateMax}.`, issueKeys: [deliverable] },
+    {
+      kind: 'create-issue',
+      text: `Created ${deliverable} "${request.title}" in ${providerProjectKey}, due ${formatDate(contract.agreedDateMax)}.`,
+      issueKeys: [deliverable],
+    },
     { kind: 'link', text: `Linked ${deliverable} as blocking ${request.sourceIssueKey}.`, issueKeys: [deliverable, request.sourceIssueKey] },
   ];
   for (const item of option.shifted) {

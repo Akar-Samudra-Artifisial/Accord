@@ -19,6 +19,7 @@ import { toAuditRow, type AuditRow } from '../negotiation/audit-view';
 import { buildDealSheet, redact, summarize } from '../negotiation/views';
 import { KIND_LABEL, type Side } from '../negotiation/delegates';
 import type { Principal } from '../atlassian/http';
+import { formatDateRange } from '../format/dates';
 import { explainOption, planOptions, type CostClass, type Size } from '../planner';
 import type { DependencyRequest } from '../negotiation/types';
 
@@ -425,7 +426,7 @@ export async function auditTrail(accountId: string | undefined): Promise<AuditRo
       optionLabel: (optionId) => {
         const option = options.get(optionId);
         if (!option) return null;
-        const range = option.dateRange.min ? `, ${option.dateRange.min} to ${option.dateRange.max}` : '';
+        const range = option.dateRange.min ? `, ${formatDateRange(option.dateRange.min, option.dateRange.max)}` : '';
         return `"${KIND_LABEL[option.kind]}"${range}`;
       },
     }),
