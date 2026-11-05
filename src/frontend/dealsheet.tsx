@@ -84,7 +84,7 @@ interface SideStatus {
 }
 
 interface DealSheet {
-  request: { id: string; title: string; status: RequestStatus; sourceIssueKey: string; neededBy: string; size: string; minSize: number | null };
+  request: { id: string; title: string; status: RequestStatus; sourceIssueKey: string | null; neededBy: string; size: string; minSize: number | null };
   requester: { teamKey: string; name: string };
   provider: { teamKey: string; name: string; projectKey: string };
   options: OptionView[];
@@ -432,9 +432,9 @@ const DealSheetView = ({ requestId, onClose, onChanged, inline }: DealSheetProps
               <LinkedText
                 text={
                   `${sheet.requester.name} asks ${sheet.provider.name} for size ${sheet.request.size}` +
-                  `${sheet.request.minSize ? ` (minimum ${sheet.request.minSize})` : ''} by ${formatDate(sheet.request.neededBy)}, for ${sheet.request.sourceIssueKey}.`
+                  `${sheet.request.minSize ? ` (minimum ${sheet.request.minSize})` : ''} by ${formatDate(sheet.request.neededBy)}, for ${sheet.request.sourceIssueKey ?? 'a restricted issue'}.`
                 }
-                keys={[sheet.request.sourceIssueKey]}
+                keys={sheet.request.sourceIssueKey ? [sheet.request.sourceIssueKey] : []}
               />
               {sheet.renegotiationContext ? (
                 <LinkedText text={sheet.renegotiationContext.text} keys={sheet.renegotiationContext.issueKeys} />

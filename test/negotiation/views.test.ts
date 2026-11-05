@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appliedChanges, openSides, type OptionView, type SideStatus } from '../../src/negotiation/views';
+import { appliedChanges, openSides, redactKeys, type OptionView, type SideStatus } from '../../src/negotiation/views';
 import type { Contract } from '../../src/negotiation/types';
 
 const none: SideStatus = { decision: null, optionId: null, optionLabel: null, byViewer: false };
@@ -55,6 +55,34 @@ describe('appliedChanges', () => {
     });
     expect(changes[0].text).toBe('Linked existing PAY-9 "Refund API" in PAY and moved its due date to Nov 27, 2026.');
     expect(changes[1].text).toBe('PAY-9 already blocked MOB-2; no new link.');
+  });
+
+  it('keeps the sentences grammatical when the deliverable is hidden from the viewer', () => {
+    const kept = appliedChanges({ title: 'Refund API', sourceIssueKey: 'MOB-2' }, 'PAY', option, contract, {
+      deliverableCreated: false,
+      linkCreated: false,
+    }, new Set(['MOB-2']));
+    expect(kept.map((c) => c.text)).toEqual([
+      'Linked the existing deliverable (restricted) "Refund API" in PAY and moved its due date to Nov 27, 2026.',
+      'A restricted issue already blocked MOB-2; no new link.',
+      'Moved PAY-3 to PAY Sprint 2.',
+      'Moved PAY-4 to the backlog.',
+      'Commented on MOB-2 and a restricted issue with the agreed dates Nov 20, 2026 – Nov 27, 2026.',
+    ]);
+    expect(kept.flatMap((c) => c.issueKeys)).not.toContain('PAY-9');
+  });
+
+  it('redactKeys picks a label that fits the sentence', () => {
+    expect(redactKeys('Keep the existing PAY-9 and move its due date.', ['PAY-9'])).toBe('Keep the existing deliverable (restricted) and move its due date.');
+    expect(redactKeys('Renegotiation: contract PAY-9 → MOB-2 at risk', ['PAY-9'])).toBe('Renegotiation: contract for a restricted issue → MOB-2 at risk');
+    expect(redactKeys('Renegotiation of the contract for PAY-9: agreed.', ['PAY-9'])).toBe('Renegotiation of the contract for a restricted issue: agreed.');
+    expect(redactKeys('Done. PAY-9 moved; PAY-90 and XPAY-9 stay.', ['PAY-9'])).toBe('Done. A restricted issue moved; PAY-90 and XPAY-9 stay.');
+    expect(redactKeys('Move PAY-9 to the backlog.', ['PAY-9'])).toBe('Move a restricted issue to the backlog.');
+    // A link is dropped whole, never left as "/browse/a restricted issue".
+    expect(redactKeys('See https://x.atlassian.net/browse/PAY-9?focused=1 and /browse/PAY-9.', ['PAY-9'])).toBe(
+      'See a restricted issue and a restricted issue.',
+    );
+    expect(redactKeys('See https://x.atlassian.net/browse/PAY-90', ['PAY-9'])).toBe('See https://x.atlassian.net/browse/PAY-90');
   });
 
   it('is empty before the deliverable exists', () => {

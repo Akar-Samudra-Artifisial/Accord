@@ -576,7 +576,7 @@ interface RequestSummary {
   id: string;
   title: string;
   status: RequestStatus;
-  sourceIssueKey: string;
+  sourceIssueKey: string | null;
   neededBy: string;
   requester: string;
   provider: string;
@@ -674,7 +674,7 @@ const InboxTab = ({ onChanged, active, lastActivityAt, watch }: LiveTabProps & {
         rows={items.map((item) => ({
           key: item.id,
           cells: [
-            { key: 'request', content: <Text>{`${item.title} (${item.sourceIssueKey})`}</Text> },
+            { key: 'request', content: <Text>{`${item.title} (${item.sourceIssueKey ?? 'restricted issue'})`}</Text> },
             { key: 'teams', content: <Text>{`${item.requester} → ${item.provider}`}</Text> },
             { key: 'needed', content: <Text>{formatDate(item.neededBy)}</Text> },
             {

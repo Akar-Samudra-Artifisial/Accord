@@ -42,7 +42,8 @@ const ROWS = [
   row(5, 't-web', 't-pay', 'WEB-2', 'PAY-5', 'unknown'),
 ];
 
-const visibleIssueKeys = vi.fn(async (keys: readonly string[]): Promise<Set<string>> => new Set(keys.filter((key) => key === 'WEB-2')));
+// The viewer (MOB lead) can browse the deliverables of their own contracts (PAY-1..3) and WEB-2.
+const visibleIssueKeys = vi.fn(async (keys: readonly string[]): Promise<Set<string>> => new Set(keys.filter((key) => /^(MOB-\d+|WEB-2|PAY-[123])$/.test(key))));
 
 vi.mock('../../src/jira/issues', () => ({
   ISSUE_KEY: /^[A-Z][A-Z0-9_]{1,9}-[1-9][0-9]*$/,
@@ -85,8 +86,9 @@ describe('dependencyMap (FR-17)', () => {
   it('shows only contracts the viewer may see, like the Contracts tab', async () => {
     const map = await dependencyMap('acc-mob');
     expect(map.edges.map((edge) => edge.contractId).sort()).toEqual([1, 2, 3, 5]);
-    // Only rows without an approver side are checked in Jira (as the user).
-    expect(visibleIssueKeys).toHaveBeenCalledWith(['WEB-1', 'PAY-4', 'WEB-2', 'PAY-5']);
+    // Source issues and deliverables are checked for every row, also the viewer's own (as the user), in one call.
+    expect(visibleIssueKeys).toHaveBeenCalledTimes(1);
+    expect([...visibleIssueKeys.mock.calls[0][0]].sort()).toEqual(['MOB-1', 'MOB-2', 'MOB-3', 'PAY-1', 'PAY-2', 'PAY-3', 'PAY-4', 'PAY-5', 'WEB-1', 'WEB-2']);
     expect(await dependencyMap(undefined)).toEqual({ teams: [], edges: [], summary: [] });
   });
 
@@ -98,13 +100,25 @@ describe('dependencyMap (FR-17)', () => {
     visibleIssueKeys.mockImplementationOnce(async (keys) => new Set(keys.filter((key) => key === 'PAY-5')));
     const deliverableOnly = (await dependencyMap('acc-mob')).edges.find((edge) => edge.contractId === 5);
     expect(deliverableOnly).toMatchObject({ title: 'Restricted', sourceIssueKey: null, deliverableIssueKey: 'PAY-5', deliverableRestricted: false });
-    // Parties (approver of a side) see every field.
+    // Parties (approver of a side) see every field they can browse.
     expect((await dependencyMap('acc-mob')).edges.find((edge) => edge.contractId === 1)).toMatchObject({
       title: 'Work req-1',
       sourceIssueKey: 'MOB-1',
       deliverableIssueKey: 'PAY-1',
       deliverableRestricted: false,
     });
+  });
+
+  it('hides the deliverable key from a party who cannot browse the provider project', async () => {
+    visibleIssueKeys.mockImplementationOnce(async (keys) => new Set(keys.filter((key) => key.startsWith('MOB-'))));
+    const own = (await dependencyMap('acc-mob')).edges.find((edge) => edge.contractId === 1);
+    expect(own).toMatchObject({ title: 'Work req-1', sourceIssueKey: 'MOB-1', deliverableIssueKey: null, deliverableRestricted: true });
+  });
+
+  it('hides the source key from a party who cannot browse the requester project, but keeps the title', async () => {
+    visibleIssueKeys.mockImplementationOnce(async (keys) => new Set(keys.filter((key) => key.startsWith('PAY-'))));
+    const own = (await dependencyMap('acc-mob')).edges.find((edge) => edge.contractId === 1);
+    expect(own).toMatchObject({ title: 'Work req-1', sourceIssueKey: null, deliverableIssueKey: 'PAY-1' });
   });
 
   it('applies the same redaction in the Contracts list', async () => {

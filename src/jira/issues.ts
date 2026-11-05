@@ -108,12 +108,18 @@ export async function getIssue(key: string, as: Principal = 'app'): Promise<Jira
   return jira<JiraIssue>(route`/rest/api/3/issue/${key}?fields=${fields}`, { as });
 }
 
-/** Subset of `keys` the principal may browse (NFR-3). */
+/** Keys per `key in (...)` query: keeps the JQL short and each search to one page. */
+export const VISIBLE_KEYS_BATCH = 100;
+
+/** Subset of `keys` the principal may browse (NFR-3). Deduplicated, then checked in batches of 100. */
 export async function visibleIssueKeys(keys: readonly string[], as: Principal): Promise<Set<string>> {
   const valid = [...new Set(keys)].filter((key) => ISSUE_KEY.test(key));
-  if (valid.length === 0) return new Set();
-  const issues = await searchIssues(`key in (${valid.join(',')})`, valid.length, as);
-  return new Set(issues.map((issue) => issue.key));
+  const visible = new Set<string>();
+  for (let start = 0; start < valid.length; start += VISIBLE_KEYS_BATCH) {
+    const batch = valid.slice(start, start + VISIBLE_KEYS_BATCH);
+    for (const issue of await searchIssues(`key in (${batch.join(',')})`, batch.length, as)) visible.add(issue.key);
+  }
+  return visible;
 }
 
 export async function createIssue(issue: NewIssue): Promise<string> {

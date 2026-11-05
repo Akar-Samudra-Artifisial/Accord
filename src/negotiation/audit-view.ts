@@ -140,6 +140,13 @@ function summaryOf(entry: AuditEntry, context: AuditViewContext): string {
   }
 }
 
+const KEY_IN_TEXT = /(?<![A-Za-z0-9_-])[A-Z][A-Z0-9_]{1,9}-[1-9][0-9]*(?![0-9])/g;
+
+/** Issue keys named in audit summaries (deliverables, notes, reasons); checked against the viewer's browse permission. */
+export function auditIssueKeys(rows: readonly AuditRow[]): string[] {
+  return [...new Set(rows.flatMap((row) => row.summary.match(KEY_IN_TEXT) ?? []))];
+}
+
 export function toAuditRow(entry: AuditEntry, context: AuditViewContext): AuditRow {
   return {
     id: entry.id,
