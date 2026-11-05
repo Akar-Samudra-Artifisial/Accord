@@ -96,7 +96,7 @@ export const monitorDeps: MonitorDeps = {
 };
 
 /** Queues one `monitor-team` job per provider team with monitored contracts. */
-export async function scheduleMonitor(trigger: 'schedule' | 'manual' | 'diag', actor: string | null): Promise<string[]> {
+export async function scheduleMonitor(trigger: 'schedule' | 'manual', actor: string | null): Promise<string[]> {
   const teamIds = await sqlMonitorStore.providersWithContracts();
   await audit('monitor', 'daily', 'monitor-started', actor, { trigger, teams: teamIds });
   if (teamIds.length > 0) {

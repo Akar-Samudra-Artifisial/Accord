@@ -11,22 +11,22 @@ See `Accord — Product Requirements Document (Codegeist 2026).md` for the full 
 ## Structure
 
 ```
-manifest.yml            Forge modules: issue panel, global page, Confluence byline, queue consumer,
-                        daily scheduled trigger, Forge SQL, two Rovo agents, seven Rovo actions,
-                        one rovo:mcp module (four tools)
+manifest.yml            Forge modules: issue panel, global page, Confluence byline, two queue consumers
+                        (`accord-negotiation`, `accord-monitor`), lifecycle and issue-link triggers, daily
+                        scheduled trigger, Forge SQL, two Rovo agents, seven Rovo actions, one rovo:mcp
+                        module (four tools)
 src/index.ts            Function handler exports
 src/planner/            Pure, deterministic planner (no @forge imports): capacity, cost, options, explain
 src/sql/migrations.ts   Forge SQL schema (append-only migrations)
 src/resolvers/          UI Kit resolvers
 src/frontend/           UI Kit entry points: panel.tsx, home.tsx, byline.tsx
 src/actions/            Rovo action handlers
-src/negotiation/        Queue consumer for negotiation rounds
-src/monitor/            Daily contract monitor
+src/negotiation/        Negotiation rounds, deal sheet and contracts (`accord-negotiation` queue consumer)
+src/monitor/            Daily contract monitor (`accord-monitor` queue consumer)
 src/demo/               Demo scenario, seed data and step-by-step demo seed (MOB/PAY)
 src/jira/, src/confluence/  Jira Agile/REST and Confluence v2 clients; charter template/parser/validator
 src/capacity/           Pure throughput and commitment aggregation
 src/teams/              Team/charter/throughput repository (Forge SQL) and team service
-src/diag/               Development-only diagnostics web trigger (remove before production)
 test/                   Vitest unit tests
 ```
 
@@ -46,26 +46,92 @@ forge install         # pick a Jira + Confluence developer site
 `manifest.yml` ships with the placeholder `ari:cloud:ecosystem::app/TODO-run-forge-register`; run
 `forge register` before `forge lint`, `forge deploy`, or `forge install`.
 
+## Install (judges)
+
+Accord is not listed on the Atlassian Marketplace; it is shared through an installation link.
+
+1. Open `<INSTALL_LINK>`, pick your Jira site (with Confluence on the same site) and approve the requested
+   permissions. You need to be a Jira site admin for the demo steps below.
+2. Open the Accord global page: Jira → Apps → Accord.
+3. Demo tab → "Seed demo data" → confirm. Accord creates two demo teams, Mobile and Payments (keys MOB/PAY, or free
+   alternatives such as ACMOB/ACPAY when those keys are taken), with Scrum boards, sprints, issues, charter pages in
+   Confluence and simulated throughput history. Wait until every step shows Done.
+4. Demo tab → "Make me the demo lead": you become the lead of both demo projects and the only approver of both
+   charters.
+5. Demo tab → turn on "Demo mode" (allow the same approver for both teams). Without it, Accord enforces dual control
+   and a second person must approve for the other team. Demo mode applies only to requests between the two demo
+   projects; requests involving any other team always keep dual control.
+6. Open a Mobile issue → View app actions → Accord → create a dependency request to Payments (size, needed-by date,
+   cost class). Accord negotiates in two rounds; refresh until the deal sheet is ready.
+7. Open the deal sheet and approve the recommended option twice: once for Mobile, once for Payments. Accord creates
+   the deliverable issue in Payments, links it to the source issue and moves shifted work; the contract appears in the
+   Contracts tab.
+8. Demo tab → "Add critical bugs to Payments": the monitor runs, the contract turns At risk and Accord opens a
+   renegotiation (Inbox tab); approve the new deal sheet the same way.
+9. Rovo: open Rovo chat and pick "Accord Team Delegate" or "Accord Broker" (for example "What do we owe other
+   teams this sprint?"). MCP: Rovo Studio → Create agent → Tools → Add tools → Connected apps → Accord (see below).
+10. Turn demo mode off again when you are done, or use "Clean demo data" to start over (the clean keeps demo mode as
+    it is).
+
+## Privacy and security
+
+- All Accord data (teams, charters, requests, deal sheets, contracts, audit trail) is stored in the app's own Forge
+  SQL database inside Atlassian's platform. Accord makes no calls to services outside Atlassian (no egress
+  permissions).
+- Accord has no LLM of its own: language models are used only through Rovo agents, which call Accord actions that
+  return planner numbers. Every number comes from the deterministic planner.
+- Dual control: both teams must approve the same option in the Accord UI before anything changes in Jira; no agent,
+  action or MCP tool can approve. One person may approve for both teams only while an admin has turned on demo mode
+  (off by default), and only for requests between Accord's own demo projects.
+- Identity always comes from the Forge invocation context; write actions check Jira permissions of the signed-in
+  user, and Rovo actions and MCP tools run as the invoking user.
+- Every decision, Jira change, monitor result and demo mode change is written to the audit trail (Audit tab, without
+  raw account ids).
+
+## Troubleshooting
+
+- "Seed demo data" is disabled: only a Jira site admin (or an admin of every target project) can seed.
+- A seed step failed: run "Seed demo data" again; it only adds what is missing.
+- "Dual control: you already approved for the other team": demo mode is off, or the request involves a team that is
+  not an Accord demo project; an admin can turn demo mode on in the Demo tab.
+- The deal sheet stays at "Negotiating": wait a minute and refresh; after 5 minutes the deal sheet offers
+  "Retry negotiation".
+- "You cannot approve for …": Accord applies the contract on your behalf, so you need the listed Jira permissions on
+  that project.
+- Contract shows "Not enough data": the provider team has no throughput history yet.
+- Accord agents or tools are missing in Rovo: Rovo must be enabled on the site; MCP tools for external clients must
+  be enabled by an admin under Connected apps.
+
+## Permissions (scopes)
+
+The scope list is unchanged since the first installation, so updates never need an upgrade by the site admin.
+
+| Scope | Why Accord needs it |
+| --- | --- |
+| `read:jira-work` | Read issues, projects, comments and issue links (issue panel, commitments, monitor) |
+| `write:jira-work` | Create deliverable issues, "blocks" links, comments and due dates when a contract is applied; demo issues and bugs |
+| `read:jira-user` | Approver names and project leads; permission checks |
+| `read:sprint:jira-software` | Sprint throughput and commitments for the planner and monitor |
+| `write:sprint:jira-software` | Move shifted work into its target sprint; demo sprints |
+| `read:board-scope:jira-software` | Find each team's Scrum board |
+| `write:board-scope:jira-software` | Move shifted work and reset demo bugs to the backlog |
+| `read:issue-details:jira`, `read:jql:jira` | JQL searches for commitments, labels and demo data |
+| `read:project:jira` | Project metadata and leads |
+| `manage:jira-project` | Demo: project properties that mark Accord's demo projects and "Make me the demo lead" |
+| `manage:jira-configuration` | Demo: create the demo projects |
+| `read:page:confluence`, `write:page:confluence` | Read, validate and create team charter pages |
+| `read:space:confluence`, `write:space:confluence` | Find or create the space for charter pages |
+| `read:label:confluence`, `write:label:confluence` | The `accord-charter` label on charter pages |
+| `storage:app` | Forge app storage; kept so the scope list stays unchanged (Accord data lives in Forge SQL) |
+
 ## Before production
 
-- Remove the `accord-dev-diag` web trigger, its `dev-diag` function from `manifest.yml`, and `src/diag/` (planned
-  for M7). The web trigger URL is public; until removal it answers 404 unless `ACCORD_DIAG_ENABLED=true` and the
-  request sends the header `x-accord-diag-key` matching the encrypted variable `ACCORD_DIAG_KEY` (compared
-  timing-safe).
-- Unset the development-only variables: `forge variables unset -e <env> ACCORD_DIAG_ENABLED`,
-  `forge variables unset -e <env> ACCORD_DIAG_KEY` and
-  `forge variables unset -e <env> ACCORD_DEMO_ALLOW_SAME_APPROVER`. Never set `ACCORD_DEMO_ALLOW_SAME_APPROVER` in
-  staging or production: without it, one account cannot approve for both teams (dual control).
-- Remove the seed-only scopes `manage:jira-project` and `manage:jira-configuration` (and `write:space:confluence`
-  if charter spaces are created beforehand) together with `src/demo/`; see "Scope usage" in `docs/spikes.md`.
-  `write:board-scope:jira-software` stays (backlog moves during apply-contract). Run `forge install --upgrade`
-  after changing scopes.
-
-Development only: `forge variables set -e development ACCORD_DIAG_ENABLED true`,
-`forge variables set --encrypt -e development ACCORD_DIAG_KEY "$(openssl rand -hex 32)"` (at least 32 characters;
-the development value is in the password manager, never in the repo) and
-`forge variables set -e development ACCORD_DEMO_ALLOW_SAME_APPROVER true` (single-account demo; the deal sheet shows
-"Demo mode: same approver allowed").
+- [x] Removed the development diagnostics web trigger (`accord-dev-diag`, `src/diag/`) and the unused
+      `accord-demo-seed` queue (1.0.0).
+- [x] Replaced the environment variable for a single-account demo with the per-installation demo mode switch
+      (Demo tab, admins only, off by default, audited). No Forge variables are needed.
+- [x] Scopes unchanged, so existing installations need no upgrade.
+- [ ] Deploy to production and create the installation link (separate approval).
 
 ## Accord tools over MCP (`rovo:mcp`, Preview)
 
@@ -92,10 +158,13 @@ only sees what they may see in Jira. There is no approve tool: deal sheets are a
 
 ## Milestones
 
-- [x] M0 — Scaffolding, deployed to `development`; spikes in `docs/spikes.md` (queue push from web trigger still fails)
+- [x] M0 — Scaffolding, deployed to `development`; spikes in `docs/spikes.md`
 - [x] M1 — Deterministic planner with unit tests
-- [x] M2 (data layer) — Jira/Confluence clients, charters (template, parser, validator, byline), capacity and
-      commitments, demo seed (MOB/PAY), Teams and Demo tabs
-- [ ] M2 (rest) — Requests, negotiation rounds, deal sheet
-- [ ] M3 — Approvals, contracts in Jira, daily monitor, Teamwork Graph
-- [ ] M4 — Demo data generator, polish, submission
+- [x] M2 — Jira/Confluence clients, charters (template, parser, validator, byline), capacity and commitments,
+      demo seed, Teams and Demo tabs
+- [x] M3 — Requests, two-round negotiation, deal sheet, approvals and contracts in Jira
+- [x] M4 — Contract monitor, Rovo actions with real data, demo polish
+- [x] M5 — User permission checks and English copy
+- [x] M6 — Renegotiation, escalation, request suggestions from Jira links, MCP tools, network map, clean demo data
+- [x] M7 — Production preparation (1.0.0): diagnostics and unused queue removed, demo mode switch, install guide
+- [ ] Production deploy and installation link (separate approval)

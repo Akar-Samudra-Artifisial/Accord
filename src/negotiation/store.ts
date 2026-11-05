@@ -558,6 +558,17 @@ export async function lastDemoClean(): Promise<AuditEntry | null> {
 }
 
 /**
+ * Latest demo mode switches (Demo tab), newest first. Not cut at the last demo clean: the clean keeps the
+ * switch as it is, so the Audit tab always shows who turned the current mode on or off.
+ */
+export async function demoModeChanges(limit = 5): Promise<AuditEntry[]> {
+  const rows = await select<AuditRowData>(
+    `SELECT * FROM audit_log WHERE entity_type = 'demo' AND entity_id = 'mode' ORDER BY created_at DESC, id DESC LIMIT ${Math.floor(limit)}`,
+  );
+  return rows.map(toAuditEntry);
+}
+
+/**
  * Latest audit entries of the given requests and contracts (viewer filter in SQL, before the limit);
  * with `sinceId` only entries written at or after the time of that audit entry (e.g. the last demo clean).
  * The cut uses created_at, not the id (see lastDemoClean); contract ids can be reused after a clean.

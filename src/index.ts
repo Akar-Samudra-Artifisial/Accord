@@ -1,11 +1,8 @@
 export { resolverHandler } from './resolvers';
 export { negotiationConsumerHandler } from './negotiation/consumer';
 export { dailyMonitorHandler, monitorConsumerHandler } from './monitor/daily';
-export { demoSeedConsumerHandler } from './demo/consumer';
 export { lifecycleHandler } from './sql/lifecycle';
 export { issueLinkCreatedHandler } from './suggestions/trigger';
-// TODO(before production): remove together with the accord-dev-diag web trigger.
-export { devDiagHandler } from './diag/webtrigger';
 export {
   listTeamsAction,
   getTeamCharterAction,

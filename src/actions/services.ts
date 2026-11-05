@@ -52,8 +52,7 @@ export const actionServices: ActionServices = {
   // Keys and names only (no leads, approvers or charter content), so agents can map names to keys.
   // Only teams whose Jira project the viewer can browse (checked as the user, one call per project).
   async teams(viewer) {
-    // `as: 'app'` only from the development diag trigger (app permissions, no user).
-    if (viewer.as === 'user') requireSignedIn(viewer);
+    requireSignedIn(viewer);
     const all = await listTeams();
     const browsable = await Promise.all(all.map((team) => accessChecks.canBrowseProject(team.jiraProjectKey, viewer)));
     return all.filter((_, index) => browsable[index]).map(({ teamKey, name, jiraProjectKey }) => ({ teamKey, name, jiraProjectKey }));

@@ -188,7 +188,7 @@ export function isBlocksFrom(link: IssueLink, blocked: string): boolean {
 /**
  * Creates "`blocker` blocks `blocked`" (built-in Blocks link type). POST /rest/api/3/issueLink stores the
  * `inwardIssue` as the link source, which reads with the outward label ("blocks") — verified on the
- * development site with `accord-dev-diag?action=verify-blocks-link` (see docs/spikes.md).
+ * development site during M3 (see "Blocks direction" in docs/spikes.md).
  */
 export async function linkBlocks(blocker: string, blocked: string): Promise<void> {
   await jira<void>(route`/rest/api/3/issueLink`, {

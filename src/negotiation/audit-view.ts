@@ -59,6 +59,8 @@ const LABELS: Record<string, string> = {
   'renegotiation-skipped': 'Renegotiation not opened',
   'renegotiation-cancelled': 'Renegotiation cancelled',
   'demo-cleaned': 'Demo data cleaned',
+  'demo-mode-enabled': 'Demo mode turned on',
+  'demo-mode-disabled': 'Demo mode turned off',
   'contract:due-date': 'Deliverable due date moved',
   'contract-superseded': 'Contract superseded',
   cancelled: 'Request cancelled',
@@ -84,6 +86,7 @@ export function auditLabel(action: string): string {
 
 function actorLabel(actor: string | null, context: AuditViewContext): string {
   if (actor === null) return 'Accord app';
+  // The diagnostics trigger was removed in 1.0.0; development audit rows written by it still carry this actor.
   if (actor === 'diag-webtrigger') return 'Accord diagnostics';
   if (context.viewerAccountId && actor === context.viewerAccountId) return 'You';
   return context.approverIds.has(actor) ? 'A team approver' : 'Another user';
@@ -95,8 +98,13 @@ function summaryOf(entry: AuditEntry, context: AuditViewContext): string {
     case 'approved': {
       const optionId = Number(p.optionId);
       const label = Number.isInteger(optionId) ? context.optionLabel?.(optionId) : null;
-      return `${text(p.side)} side approved ${label ?? 'an option'}`;
+      const demo = p.demoMode === true ? ' (demo mode: same approver as the other side)' : '';
+      return `${text(p.side)} side approved ${label ?? 'an option'}${demo}`;
     }
+    case 'demo-mode-enabled':
+      return 'One person may approve for both teams (dual control off, for evaluation only)';
+    case 'demo-mode-disabled':
+      return 'Dual control on: each team needs its own approver';
     case 'rejected':
       return `${text(p.side)} side rejected${p.reason ? `: ${text(p.reason).slice(0, 120)}` : ''}`;
     case 'decision-denied':

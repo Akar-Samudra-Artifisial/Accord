@@ -4,7 +4,17 @@ All notable changes are recorded here. The format follows Keep a Changelog; vers
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-05
+
 ### Added
+- Demo mode switch in the Demo tab (site admins or admins of every Accord demo project, checked on the server): while it is on, one person may approve a deal sheet for both teams. It is stored per installation, off by default, explained in the tab as evaluation-only, and every change is audited ("Demo mode turned on/off" in the Audit tab); an approval it allows is marked "demo mode: same approver" in the audit. "Clean demo data" keeps the switch as it is. The deal sheet still shows "Demo: same approver allowed" while it is on.
+- README: installation steps for judges, privacy and security statement, troubleshooting, and the reason for every scope.
+
+### Changed
+- Demo mode relaxes dual control only for requests between two of Accord's own demo projects; requests that involve any other team always need a separate approver per team, also while demo mode is on. The Demo tab says so.
+- When the demo mode check fails (for example storage or Jira unavailable), Accord keeps dual control and refuses the second approval with the usual message and audit entry.
+- The Rovo/MCP `list-teams` action always requires a signed-in user.
+- Pinned `prosemirror-view` 1.42.9 and `prosemirror-model` 1.25.12 through npm `overrides` (transitive dependencies of `@forge/bridge`/`@forge/react`, not part of the runtime bundle) to clear the high-severity `npm audit` finding.
 - Forge app scaffolding (UI Kit, runtime `nodejs24.x`, TypeScript): manifest with a Jira issue panel, global page, Confluence byline, negotiation queue consumer, daily monitor, Forge SQL, the Rovo agents "Accord Team Delegate" and "Accord Broker", and six Rovo actions (not deployed yet; `app.id` stays a placeholder until `forge register`).
 - Forge SQL schema for teams, charters, throughput, requests, negotiation rounds, options, approvals, contracts, dependency edges and the audit trail.
 - Deterministic planner: realistic/pessimistic capacity from the last 6 sprints; options on time, on time with a shift (red lines are never moved), partial, later, and reject based on the charter's maximum share; at most 4 ranked options with one recommendation.
@@ -54,7 +64,12 @@ All notable changes are recorded here. The format follows Keep a Changelog; vers
 - The renegotiation deal sheet explains the contract it renegotiates, e.g. "Renegotiation of the contract for ACPAY-20: agreed Nov 29, 2026, now projected Dec 13, 2026 after 4 critical bugs", with dates from the replaced contract and the bug count from the monitor projection.
 - "Clean demo data" button in the Demo tab (Jira admins / demo project admins only, checked on the server, with confirmation): deletes requests, contracts, renegotiations, escalations, link suggestions and notification markers between the Accord demo teams, moves `accord-demo-bug` bugs to the backlog, labels Accord-created deliverables `accord-archived` and moves them to Done (backlog when Done is not available), and removes only the "blocks" links Accord recorded. Issues are never deleted, foreign projects are never touched, and a repeated clean reports zeros. The audit log is kept with a `demo-cleaned` entry; the Audit tab shows only entries after the last clean. Comments and sprint moves are not restored. Diag action `clean-demo` (development only).
 
+### Removed
+- The development diagnostics web trigger `accord-dev-diag` (function `dev-diag`) and all diag actions; the Forge variables `ACCORD_DIAG_ENABLED`, `ACCORD_DIAG_KEY` and `ACCORD_DEMO_ALLOW_SAME_APPROVER` are no longer read.
+- The unused `accord-demo-seed` queue and its consumer (the Demo tab runs the seed step by step) and the unused `getDemoOptions` resolver.
+
 ### Security
+- Dual control can only be relaxed through the audited, admin-only demo mode switch; no environment variable turns it off anymore.
 - Dual control: one account may not approve for both teams unless the demo variable `ACCORD_DEMO_ALLOW_SAME_APPROVER=true` is set (development only).
 - Registering a team, creating a charter page and syncing a charter are limited to the Jira project lead or holders of `ADMINISTER_PROJECTS`; the default charter approver is the project lead, not the caller.
 - The `accord-dev-diag` web trigger rejects every action (404) unless `ACCORD_DIAG_ENABLED=true`.
