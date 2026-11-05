@@ -328,6 +328,8 @@ function shiftOption(ctx: Context, limit: number): ShiftOutcome {
     key: m.item.key,
     costClass: m.item.costClass,
     toSprintId: ctx.slots[m.to].sprint.id,
+    // Where the issue sits in Jira now (unscheduled work due early competes for the first slot but sits in the backlog).
+    fromSprintId: m.item.sprintId ?? null,
   }));
   const shiftCost = moves.reduce((sum, m) => sum + COST_WEIGHT[m.item.costClass], 0);
   const trace: TraceStep[] = [...ctx.baseTrace];
@@ -466,6 +468,23 @@ function dedupeKey(option: Draft): string {
   ].join('|');
 }
 
+/**
+ * The sprint the option's latest date is the end of: apply-contract plans the deliverable there (a projected
+ * sprint does not exist in Jira, so the deliverable stays in the backlog). Recorded in the trace, so the
+ * deal sheet and apply-contract read the same sprint the planner used.
+ */
+function withDeliverableSprint(option: Draft, slots: readonly Slot[]): Draft {
+  if (option.kind === 'reject') return option;
+  const slot = slots.find((candidate) => candidate.sprint.endDate === option.dateRange.max);
+  if (!slot) return option;
+  const step = makeStep(
+    isProjectedSprintId(slot.sprint.id) ? 'deliverable-backlog' : 'deliverable-sprint',
+    { deliverableSprint: slot.sprint.name, deliverableSprintEnd: slot.sprint.endDate },
+    [{ type: 'sprint', ref: slot.sprint.id }],
+  );
+  return { ...option, trace: [...option.trace, step] };
+}
+
 export function planOptions(input: PlannerInput): PlannerResult {
   validateInput(input);
   const { request, charter, capacity, variation } = input;
@@ -549,7 +568,8 @@ export function planOptions(input: PlannerInput): PlannerResult {
   }
 
   const seen = new Set<string>();
-  const options: PlannerOption[] = [...drafts]
+  const options: PlannerOption[] = drafts
+    .map((option) => withDeliverableSprint(option, slots))
     .sort(compareDrafts)
     .filter((option) => {
       const key = dedupeKey(option);

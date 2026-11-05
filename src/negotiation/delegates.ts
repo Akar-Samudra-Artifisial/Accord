@@ -1,6 +1,6 @@
 import { formatDate, formatDateRange } from '../format/dates';
 import { buildConsequences, renderTemplate } from '../planner';
-import { mergeTraceValues } from '../planner/explain';
+import { deliverableSprintOf, mergeTraceValues } from '../planner/explain';
 import type { OptionKind, PlannerVariation, TraceStep } from '../planner';
 import type { Approval, DependencyRequest, StoredOption } from './types';
 
@@ -176,6 +176,17 @@ export function isProjectedSprint(sprintId: string): boolean {
   return sprintId.startsWith('projected-');
 }
 
+/** Where apply-contract puts the deliverable (the sprint in the option trace); null for older options. */
+function deliverablePlacement(option: StoredOption, existingDeliverable: string | null): JiraChange | null {
+  const sprint = deliverableSprintOf(option.trace);
+  if (!sprint) return null;
+  const subject = existingDeliverable ?? 'the new issue';
+  if (sprint.inJira) return { kind: 'move-sprint', text: `Plan ${subject} in ${sprint.name}.` };
+  return existingDeliverable
+    ? { kind: 'move-backlog', text: `Move ${existingDeliverable} to the backlog (planned for ${sprint.name}, which does not exist in Jira yet).` }
+    : { kind: 'move-backlog', text: `Keep the new issue in the backlog (planned for ${sprint.name}, which does not exist in Jira yet).` };
+}
+
 /** Everything apply-contract would change in Jira, shown before approval (PRD "Tidak ada kejutan"). */
 export function previewChanges(
   request: Pick<DependencyRequest, 'title' | 'sourceIssueKey'>,
@@ -200,6 +211,8 @@ export function previewChanges(
         },
         { kind: 'link', text: `Link the new issue as blocking ${request.sourceIssueKey}.` },
       ];
+  const placement = deliverablePlacement(option, existingDeliverable);
+  if (placement) changes.push(placement);
   const shiftSteps = option.trace.filter((step) => step.step === 'shift');
   for (const item of option.shifted) {
     const step = shiftSteps.find((candidate) => candidate.values.key === item.key);

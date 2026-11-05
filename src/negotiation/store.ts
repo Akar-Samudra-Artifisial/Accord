@@ -393,6 +393,21 @@ export const sqlStore: NegotiationStore = {
     );
     return rows.map((row) => row.request_id);
   },
+  async recordShiftOrigins(requestId, origins) {
+    // INSERT IGNORE: a retried apply-contract keeps the position recorded before the first move.
+    for (const origin of origins) {
+      await run('INSERT IGNORE INTO shift_origins (request_id, issue_key, from_sprint_id) VALUES (?, ?, ?)', [
+        requestId,
+        origin.issueKey,
+        origin.fromSprintId,
+      ]);
+      await run('INSERT IGNORE INTO shift_targets (request_id, issue_key, to_sprint_id) VALUES (?, ?, ?)', [
+        requestId,
+        origin.issueKey,
+        origin.toSprintId,
+      ]);
+    }
+  },
 };
 
 /** Renegotiation rows of the given requests (as renegotiation), keyed by request id. */

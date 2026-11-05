@@ -1,4 +1,4 @@
-import { planOptions, isValidIsoDate, type CostClass, type PlannerInput, type PlannerOption, type PlannerVariation, type Size } from '../planner';
+import { planOptions, isValidIsoDate, deliverableSprintOf, type CostClass, type PlannerInput, type PlannerOption, type PlannerVariation, type Size } from '../planner';
 import { UserFacingError } from '../errors';
 import type { JiraPermission } from '../jira/permissions';
 import { formatDate, formatDateRange } from '../format/dates';
@@ -507,6 +507,45 @@ async function reuseDeliverable(
   return issueKey;
 }
 
+const DELIVERABLE_SPRINT_STEP = 'contract:deliverable-sprint';
+
+/**
+ * Puts the deliverable into the sprint the planner used for the agreed option (read from the option trace,
+ * never recomputed). A sprint that does not exist in Jira yet leaves a new deliverable in the backlog; a
+ * renegotiation (`existing`) moves its kept deliverable to the backlog then. Returns the sentence for the
+ * deliverable comment, null for options stored before the planner recorded the sprint. A failed move is
+ * audited and does not stop the contract (the deliverable stays where it is).
+ */
+async function placeDeliverable(
+  deps: NegotiationDeps,
+  requestId: string,
+  option: StoredOption,
+  deliverable: string,
+  existing: boolean,
+  actor: Record<string, unknown>,
+): Promise<string | null> {
+  const sprint = deliverableSprintOf(option.trace);
+  if (!sprint) return null;
+  const planned = sprint.inJira
+    ? `Deliverable planned in ${sprint.name}.`
+    : `The deliverable stays in the backlog: it is planned for ${sprint.name}, which does not exist in Jira yet.`;
+  if (await deps.store.hasStep(requestId, DELIVERABLE_SPRINT_STEP)) return planned;
+  try {
+    if (sprint.inJira) await deps.jira.moveToSprint(sprint.id, [deliverable]);
+    else if (existing) await deps.jira.moveToBacklog([deliverable]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await deps.store.audit('request', requestId, 'deliverable-sprint-failed', null, { issueKey: deliverable, sprintId: sprint.id, error: message.slice(0, 500) });
+    return null;
+  }
+  await deps.store.audit('request', requestId, DELIVERABLE_SPRINT_STEP, null, {
+    issueKey: deliverable,
+    ...(sprint.inJira ? { sprintId: sprint.id, sprintName: sprint.name } : { backlog: true, plannedFor: sprint.name, reason: 'sprint does not exist in Jira yet' }),
+    ...actor,
+  });
+  return planned;
+}
+
 /** Writes the agreement to Jira and SQL. Every step is guarded, so a retry never duplicates (NFR-5, NFR-7). */
 export async function applyContract(deps: NegotiationDeps, requestId: string): Promise<RoundResult> {
   const request = await requireRequest(deps, requestId);
@@ -541,7 +580,20 @@ export async function applyContract(deps: NegotiationDeps, requestId: string): P
     });
   }
 
+  const placement = await placeDeliverable(deps, requestId, option, deliverable, !deliverableCreated, actor);
+
   if (option.shifted.length > 0 && !(await deps.store.hasStep(requestId, 'contract:shift'))) {
+    // Recorded before the moves, so "Clean demo data" can put every shifted issue back (also after a crash).
+    await deps.store.recordShiftOrigins(
+      requestId,
+      option.shifted
+        .filter((item) => item.fromSprintId !== undefined)
+        .map((item) => ({
+          issueKey: item.key,
+          fromSprintId: item.fromSprintId ?? null,
+          toSprintId: isProjectedSprint(item.toSprintId) ? null : item.toSprintId,
+        })),
+    );
     const toBacklog = option.shifted.filter((item) => isProjectedSprint(item.toSprintId)).map((item) => item.key);
     const bySprint = new Map<string, string[]>();
     for (const item of option.shifted.filter((shifted) => !isProjectedSprint(shifted.toSprintId))) {
@@ -574,6 +626,7 @@ export async function applyContract(deps: NegotiationDeps, requestId: string): P
     `comment:contract:${deliverable}`,
     deliverable,
     `Accord contract with ${requester.name} (${request.sourceIssueKey}): agreed delivery ${agreed}. ${provenance}` +
+      (placement ? ` ${placement}` : '') +
       (option.shifted.length ? ` Moved to make room: ${option.shifted.map((item) => item.key).join(', ')}.` : '') +
       replaces,
   );

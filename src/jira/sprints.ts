@@ -55,6 +55,10 @@ export async function updateSprint(
   return jira<JiraSprint>(route`/rest/agile/1.0/sprint/${sprintId}`, { method: 'POST', body: patch });
 }
 
+export async function getSprint(sprintId: number): Promise<JiraSprint> {
+  return jira<JiraSprint>(route`/rest/agile/1.0/sprint/${sprintId}`);
+}
+
 export async function moveIssuesToSprint(sprintId: number, issueKeys: readonly string[]): Promise<void> {
   // The Agile API accepts at most 50 issues per call.
   for (let i = 0; i < issueKeys.length; i += 50) {

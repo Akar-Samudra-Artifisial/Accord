@@ -187,6 +187,15 @@ export interface NegotiationStore {
    * with `contractId` only those opened for that contract.
    */
   undecidedRenegotiations(providerTeamId: string, contractId?: number): Promise<string[]>;
+  /** Stores where shifted issues sat before apply-contract moved them (once per request and issue). */
+  recordShiftOrigins(requestId: string, origins: ReadonlyArray<ShiftOrigin>): Promise<void>;
+}
+
+/** Position of a shifted issue before and after the move; null = backlog. */
+export interface ShiftOrigin {
+  issueKey: string;
+  fromSprintId: string | null;
+  toSprintId: string | null;
 }
 
 /** Person a request without agreement is escalated to (FR-15). */

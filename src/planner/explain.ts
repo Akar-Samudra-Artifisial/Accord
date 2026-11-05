@@ -35,7 +35,18 @@ const STEP_TEMPLATES: Readonly<Record<string, string>> = {
     'Before {neededBy} the charter share allows at most {capTotal|issue} for other teams, and the request needs {requested}.',
   'reject-red-line': 'Only red-line work could make room before {neededBy}, and red-line work is never moved.',
   'reject-horizon': 'No delivery date fits within the next {horizonSprints|sprint}.',
+  'deliverable-sprint': 'The deliverable is planned in {deliverableSprint}, which ends {deliverableSprintEnd}.',
+  'deliverable-backlog':
+    'The deliverable is planned for {deliverableSprint} (ends {deliverableSprintEnd}), which does not exist in Jira yet, so it stays in the backlog.',
 };
+
+/** Sprint the planner put the deliverable in (from the option trace); null for options stored before this step existed. */
+export function deliverableSprintOf(trace: readonly TraceStep[]): { id: string; name: string; inJira: boolean } | null {
+  const step = trace.find((item) => item.step === 'deliverable-sprint' || item.step === 'deliverable-backlog');
+  const sprint = step?.sources.find((source) => source.type === 'sprint');
+  if (!step || !sprint) return null;
+  return { id: sprint.ref, name: String(step.values.deliverableSprint), inJira: step.step === 'deliverable-sprint' && !isProjectedSprintId(sprint.ref) };
+}
 
 const CONSEQUENCE_TEMPLATES: Readonly<Record<OptionKind, { requester: string; provider: string }>> = {
   'on-time': {
