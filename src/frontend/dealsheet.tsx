@@ -26,7 +26,7 @@ import { invoke } from '@forge/bridge';
 import { formatDate, formatDateRange } from '../format/dates';
 import { requestIsMoving, useBoundedPolling } from './polling';
 
-/** Shared deal sheet modal (issue panel and global page Inbox). */
+/** Shared deal sheet: inline in the issue panel, modal in the global page Inbox. */
 
 type Failure = { ok: false; error: string };
 export type Side = 'requester' | 'provider';
@@ -318,16 +318,23 @@ function decisionMessage(result: DecisionResult, option: OptionView, decision: '
   return `You approved ${named}. Waiting for the other team lead.`;
 }
 
-export const DealSheetModal = ({
-  requestId,
-  onClose,
-  onChanged,
-}: {
+interface DealSheetProps {
   requestId: string;
   onClose: () => void;
   /** Called when the request status changes, so the caller can refresh its badges. */
   onChanged?: () => void;
-}) => {
+}
+
+/** Deal sheet in a modal (global page). */
+export const DealSheetModal = (props: DealSheetProps) => <DealSheetView {...props} inline={false} />;
+
+/**
+ * Deal sheet expanded in place (issue panel). A UI Kit Modal opened from the issue panel right after Jira
+ * refreshed the issue (Accord's "deal sheet ready" comment) sometimes did not appear on the first click.
+ */
+export const DealSheetInline = (props: DealSheetProps) => <DealSheetView {...props} inline />;
+
+const DealSheetView = ({ requestId, onClose, onChanged, inline }: DealSheetProps & { inline: boolean }) => {
   const [sheet, setSheet] = useState<DealSheet | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -403,12 +410,9 @@ export const DealSheetModal = ({
   const others = sheet && featured ? sheet.options.filter((option) => option.id !== featured.id) : [];
   const settled = status === 'approved' || status === 'contracted';
 
-  return (
-    <Modal onClose={onClose} width="x-large">
-      <ModalHeader>
-        <ModalTitle>{sheet ? `Deal sheet: ${sheet.request.title}` : 'Deal sheet'}</ModalTitle>
-      </ModalHeader>
-      <ModalBody>
+  const title = sheet ? `Deal sheet: ${sheet.request.title}` : 'Deal sheet';
+  const body = (
+    <>
         {!sheet ? (
           error ? (
             <SectionMessage appearance="error">
@@ -594,7 +598,30 @@ export const DealSheetModal = ({
             ) : null}
           </Stack>
         )}
-      </ModalBody>
+    </>
+  );
+
+  if (inline) {
+    return (
+      <Box xcss={cardStyle}>
+        <Stack space="space.200">
+          <Heading size="small">{title}</Heading>
+          {body}
+          <Inline>
+            <Button appearance="subtle" onClick={onClose}>
+              Hide deal sheet
+            </Button>
+          </Inline>
+        </Stack>
+      </Box>
+    );
+  }
+  return (
+    <Modal onClose={onClose} width="x-large">
+      <ModalHeader>
+        <ModalTitle>{title}</ModalTitle>
+      </ModalHeader>
+      <ModalBody>{body}</ModalBody>
       <ModalFooter>
         <Button appearance="subtle" onClick={onClose}>
           Close

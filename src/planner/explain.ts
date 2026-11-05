@@ -44,7 +44,7 @@ const CONSEQUENCE_TEMPLATES: Readonly<Record<OptionKind, { requester: string; pr
   },
   'on-time-with-shift': {
     requester: 'Delivery {dateMin..dateMax}, on or before {neededBy}.',
-    provider: 'Moves {shiftedCount|planned item} to a later sprint: {shiftedKeys}.',
+    provider: 'Moves {shiftedCount|planned item} to {shiftedTo}: {shiftedKeys}.',
   },
   partial: {
     requester:
@@ -96,11 +96,34 @@ export function mergeTraceValues(trace: readonly TraceStep[]): Values {
   return trace.reduce<Values>((acc, step) => ({ ...acc, ...step.values }), {});
 }
 
+/** Planner sprints beyond the provider's real Jira sprints; work shifted there goes to the backlog. */
+export function isProjectedSprintId(sprintId: string): boolean {
+  return sprintId.startsWith('projected-');
+}
+
+export const BACKLOG_TARGET = 'the backlog';
+
+/**
+ * Where the shift steps move work: sprint names, or "the backlog" for sprints that do not exist in Jira
+ * yet. Read from the step sources, so traces stored before this text existed render the same way.
+ */
+function shiftDestinations(trace: readonly TraceStep[]): string {
+  const targets: string[] = [];
+  for (const step of trace) {
+    if (step.step !== 'shift') continue;
+    const sprint = step.sources.find((source) => source.type === 'sprint');
+    const target = sprint && isProjectedSprintId(sprint.ref) ? BACKLOG_TARGET : String(step.values.toSprint);
+    if (!targets.includes(target)) targets.push(target);
+  }
+  return targets.join(' and ');
+}
+
 export function buildConsequences(
   kind: OptionKind,
   trace: readonly TraceStep[],
 ): { requester: string; provider: string } {
   const values = mergeTraceValues(trace);
+  if (kind === 'on-time-with-shift') values.shiftedTo = shiftDestinations(trace);
   const templates = CONSEQUENCE_TEMPLATES[kind];
   return {
     requester: renderTemplate(templates.requester, values),

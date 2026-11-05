@@ -40,6 +40,23 @@ export function changedKey(previousKey: string | null, value: unknown): string |
   return key === previousKey ? null : key;
 }
 
+/**
+ * One function per key that stays the same across renders. UI Kit gives every new callback prop a new
+ * handler id and sends it to the host; a click that lands while the host still has the old id is dropped,
+ * so buttons in lists that refresh in the background keep the same handler.
+ */
+export function keyedCallbacks<K>(handle: (key: K) => void): (key: K) => () => void {
+  const cache = new Map<K, () => void>();
+  return (key) => {
+    let callback = cache.get(key);
+    if (!callback) {
+      callback = () => handle(key);
+      cache.set(key, callback);
+    }
+    return callback;
+  };
+}
+
 /** Calls `load` every IDLE_POLL_MS while `enabled` and within IDLE_WINDOW_MS of `lastActivityAt`. */
 export function useIdlePolling(enabled: boolean, lastActivityAt: number, load: () => Promise<void>) {
   const [tick, setTick] = useState(0);

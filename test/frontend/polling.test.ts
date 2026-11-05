@@ -5,8 +5,22 @@ import {
   contractIsMoving,
   contractSignature,
   idlePollingAllowed,
+  keyedCallbacks,
   requestIsMoving,
 } from '../../src/frontend/polling';
+
+describe('stable button handlers in refreshing lists', () => {
+  it('returns the same function per key on every render, so UI Kit keeps the handler id', () => {
+    const opened: string[] = [];
+    const open = keyedCallbacks((id: string) => opened.push(id));
+    const first = open('req-1');
+    expect(open('req-1')).toBe(first);
+    expect(open('req-2')).not.toBe(first);
+    first();
+    open('req-2')();
+    expect(opened).toEqual(['req-1', 'req-2']);
+  });
+});
 
 describe('idle refresh of the global page', () => {
   it('runs for 10 minutes after the last interaction, then stops', () => {

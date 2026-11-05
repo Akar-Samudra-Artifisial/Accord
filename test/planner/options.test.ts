@@ -3,7 +3,8 @@ import { SIZE_ISSUES, computeCapacity, explainOption, planOptions } from '../../
 import type { PlannerInput, PlannerOption, PlannerResult, Size, WorkItem } from '../../src/planner';
 import { projectContract } from '../../src/planner/projection';
 import { formatDate } from '../../src/format/dates';
-import { CHARTER, baseInput, fillers, item, shiftScenario } from './fixtures';
+import { buildConsequences, makeStep } from '../../src/planner/explain';
+import { CHARTER, SPRINTS, baseInput, fillers, item, shiftScenario } from './fixtures';
 
 const kinds = (result: PlannerResult) => result.options.map((o) => o.kind);
 
@@ -131,6 +132,36 @@ describe('planOptions', () => {
     });
   });
 
+  it('names the backlog as the destination when the next free sprint does not exist in Jira yet', () => {
+    // Only Sprint 41 and 42 exist (both counted by the monitor): the move target is a projected sprint.
+    const commitments = [...fillers('PAY', 's1', 8), item('PAY-20', 's2', { priority: 'Low', costClass: 'intangible' })];
+    const result = planOptions(
+      baseInput({
+        request: { size: 'S', neededBy: '2026-11-26', costClass: 'standard' },
+        sprints: SPRINTS.filter((s) => s.id !== 's3'),
+        commitments,
+        workAhead: { issues: 9, countedKeys: commitments.map((c) => c.key), countedSprintIds: ['s1', 's2'] },
+      }),
+    );
+    const shift = result.options.find((o) => o.kind === 'on-time-with-shift')!;
+    expect(shift.shifted).toEqual([{ key: 'PAY-20', costClass: 'intangible', toSprintId: 'projected-1' }]);
+    expect(shift.consequences.provider).toBe('Moves 1 planned item to the backlog: PAY-20.');
+    expect(explainOption(shift)).toContain('from Sprint 42 to the backlog.');
+    expect(explainOption(shift)).not.toMatch(/later sprint|Projected sprint/);
+  });
+
+  it('a stored trace that still names the projected sprint renders the backlog as the destination', () => {
+    const trace = [
+      makeStep('shift', { key: 'PAY-12', summary: 'Work', fromSprint: 'Payments Sprint 41', toSprint: 'Projected sprint 1' }, [
+        { type: 'issue', ref: 'PAY-12' },
+        { type: 'sprint', ref: 'projected-1' },
+      ]),
+      makeStep('shift-total', { shiftedCount: 1, shiftedKeys: 'PAY-12', shiftCost: 1, requested: 1, dateMin: '2026-11-15', dateMax: '2026-11-15' }),
+      makeStep('requested', { requested: 1, neededBy: '2026-11-26' }),
+    ];
+    expect(buildConsequences('on-time-with-shift', trace).provider).toBe('Moves 1 planned item to the backlog: PAY-12.');
+  });
+
   it('shifts the cheapest shiftable work when capacity is short', () => {
     const result = planOptions(
       baseInput({ request: { size: 'L', neededBy: '2026-11-29', costClass: 'fixed-date' }, commitments: shiftScenario() }),
@@ -140,6 +171,8 @@ describe('planOptions', () => {
     expect(shift.recommended).toBe(true);
     expect(shift.shifted.map((s) => s.key)).toEqual(['PAY-1', 'PAY-11', 'PAY-2', 'PAY-3']);
     expect(shift.shifted.every((s) => s.toSprintId === 's3')).toBe(true);
+    // Sprint 43 exists in Jira: the text names it.
+    expect(shift.consequences.provider).toBe('Moves 4 planned items to Sprint 43: PAY-1, PAY-11, PAY-2, PAY-3.');
     expect(shift.shiftCost).toBe(5);
     expect(shift.dateRange).toEqual({ min: '2026-11-29', max: '2026-11-29' });
     expect(shift.rulesUsed).toContain('Shiftable: priority Low');

@@ -97,6 +97,8 @@ import {
 } from '../../src/monitor/monitor';
 import { applyContract, decide, openRenegotiation, runRound1, runRound2 } from '../../src/negotiation/orchestrator';
 import type { ContractStatus } from '../../src/negotiation/types';
+import { previewChanges } from '../../src/negotiation/delegates';
+import { buildConsequences } from '../../src/planner/explain';
 import type { Charter, Sprint, WorkItem } from '../../src/planner';
 import { capacityFromSamples, toWorkItem } from '../../src/capacity/aggregate';
 import { toPlannerSprint } from '../../src/jira/sprints';
@@ -346,6 +348,10 @@ describe('two contracts on freshly seeded demo data', () => {
     // The L contract (Dec 13) is not ahead of a request agreed by Nov 15 in the monitor order: 12 counted + 1
     // misses Sprint 41 at 9 per sprint until shiftable work leaves Sprint 41/42; the L contract then follows.
     expect([old.agreedDateMax, newer.agreedDateMax]).toEqual(['2026-12-13', '2026-11-15']);
+    // The seed has no sprint after Sprint 42: the shifted work goes to the backlog, and the deal sheet says so.
+    const shift = (await h.store.listOptions(SECOND_ID)).find((o) => o.kind === 'on-time-with-shift')!;
+    expect(buildConsequences(shift.kind, shift.trace).provider).toBe('Moves 4 planned items to the backlog: PAY-12, PAY-4, PAY-5, PAY-10.');
+    expect(previewChanges({ title: 'Refund status', sourceIssueKey: 'MOB-2' }, 'PAY', shift).filter((c) => c.kind === 'move-backlog')).toHaveLength(4);
 
     const result = await monitorProviderTeam(deps, PAY.id);
     expect(result.evaluated.map((e) => [e.contractId, e.to])).toEqual([

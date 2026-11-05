@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ForgeReconciler, {
   Button,
   DatePicker,
@@ -11,7 +11,6 @@ import ForgeReconciler, {
   Inline,
   Label,
   Lozenge,
-  ModalTransition,
   RequiredAsterisk,
   SectionMessage,
   Select,
@@ -21,10 +20,10 @@ import ForgeReconciler, {
   Textfield,
   useForm,
 } from '@forge/react';
-import { call, DealSheetModal, EscalatedLozenge, RenegotiationLozenge, StatusLozenge, type RequestStatus } from './dealsheet';
+import { call, DealSheetInline, EscalatedLozenge, RenegotiationLozenge, StatusLozenge, type RequestStatus } from './dealsheet';
 import { defaultNeededBy } from './dates';
 import { formatDate } from '../format/dates';
-import { contractIsMoving, requestIsMoving, useBoundedPolling } from './polling';
+import { changedKey, contractIsMoving, keyedCallbacks, requestIsMoving, useBoundedPolling } from './polling';
 
 interface RequestSummary {
   id: string;
@@ -207,13 +206,24 @@ const App = () => {
   const [dismissing, setDismissing] = useState<number | null>(null);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
 
+  // Same data → no state change: a background poll does not re-render the panel (and its buttons) mid-click.
+  const shownKey = useRef<string | null>(null);
   const load = useCallback(async () => {
     const result = await call<PanelState>('getPanelState');
     if (result.ok) {
-      setState(result);
+      const key = changedKey(shownKey.current, result);
+      if (key !== null) {
+        shownKey.current = key;
+        setState(result);
+      }
       setError(null);
     } else setError(result.error);
   }, []);
+  // Stable per request: a refresh that does change the panel keeps the button's handler id.
+  const toggleDealSheet = useMemo(
+    () => keyedCallbacks((requestId: string) => setOpenRequest((open) => (open === requestId ? null : requestId))),
+    [],
+  );
 
   useEffect(() => {
     void load();
@@ -308,10 +318,22 @@ const App = () => {
                 : `Projected delivery ${formatDate(request.contract.projectedDate, 'not checked yet')} · agreed by ${formatDate(request.contract.agreedDateMax)}`}
             </Text>
           ) : null}
-          {request.pendingFor.length ? <Text weight="bold">Your decision is needed.</Text> : null}
-          <Inline>
-            <Button onClick={() => setOpenRequest(request.id)}>Open deal sheet</Button>
+          {/* Beside the button, not above it: the button does not move when the status changes under the cursor. */}
+          <Inline space="space.100" alignBlock="center">
+            <Button onClick={toggleDealSheet(request.id)}>{openRequest === request.id ? 'Hide deal sheet' : 'Open deal sheet'}</Button>
+            {request.pendingFor.length ? <Text weight="bold">Your decision is needed.</Text> : null}
           </Inline>
+          {/* Inline, not a Modal: see DealSheetInline. */}
+          {openRequest === request.id ? (
+            <DealSheetInline
+              requestId={request.id}
+              onChanged={() => void refresh()}
+              onClose={() => {
+                setOpenRequest(null);
+                void refresh();
+              }}
+            />
+          ) : null}
         </Stack>
       ))}
       {state.requests.length ? (
@@ -351,18 +373,6 @@ const App = () => {
           </Button>
         </Inline>
       )}
-      <ModalTransition>
-        {openRequest ? (
-          <DealSheetModal
-            requestId={openRequest}
-            onChanged={() => void refresh()}
-            onClose={() => {
-              setOpenRequest(null);
-              void refresh();
-            }}
-          />
-        ) : null}
-      </ModalTransition>
     </Stack>
   );
 };
