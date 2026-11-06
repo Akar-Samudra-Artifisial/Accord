@@ -18,8 +18,8 @@ Rules reminder (from `docs/codegeist2026-info.md` §5, official page): public Yo
 | E | Monitor and automatic renegotiation | 2:25–3:15 | 0:50 | 93 (112 wpm) |
 | F | Rovo agents and MCP | 3:15–4:00 | 0:45 | 87 (116 wpm) |
 | G | Trust, security, audit | 4:00–4:23 | 0:23 | 53 (138 wpm) |
-| H | Close and call to action | 4:23–4:38 | 0:15 | 34 (136 wpm) |
-| | **Total** | **4:38** | | **549** |
+| H | Close and call to action | 4:23–4:38 | 0:15 | 29 (116 wpm) |
+| | **Total** | **4:38** | | **544** |
 
 Buffer: 22 seconds under the 5:00 limit. About 20 seconds of real waiting (negotiation ~10–15 s, renegotiation ~9–15 s, Rovo replies) is cut with jump cuts, so the voice-over pace is a little above the on-screen action and averages 118 words per minute.
 
@@ -46,7 +46,7 @@ Conventions: "Click" means a real click on the labelled element. Overlay = burne
 | 15 | 3:50–4:00 | Rovo Studio: Create agent → "Start from blank" → Tools → Add tools → Connected apps → Accord | Show the Accord app and its four tools as named on screen: "Create dependency request (development)", "Get dependency request (development)", "List contracts (development)", "List teams (development)". Do not publish the agent. | VO15: Accord also exposes four tools over MCP, so any agent can list teams, read requests and contracts, or create a request. There is no approve tool. | Zoom 125% on the tool list. "Start from blank" creates a draft "Untitled Agent" automatically: **delete that draft after the take.** |
 | 16 | 4:00–4:11 | Accord → **Audit** tab | Scroll the newest events: request, approvals, Jira changes, monitor result, demo mode. The "By" column shows "You" or "Accord app". | VO16: Every decision, Jira change and monitor result lands in the audit trail. A rejected request is escalated to the escalation contact. | Overlay: "Audit trail". Zoom 125%. The tab shows no raw account ids. |
 | 17 | 4:11–4:23 | Accord → **Network** tab | Show the dependency map for 4 s (verified in the dry-run). Then cut to a plain slide: "Forge · Forge SQL · no egress · UI and agent actions run as the signed-in user; background checks run as the app". | VO17: The Network tab maps who depends on whom. Data stays in Forge SQL, with no calls outside Atlassian. UI and agent actions run with your permissions; background checks run as the app. | Plain slide in the last 5 s. Do not show the manifest or any code. |
-| 18 | 4:23–4:38 | Title card (dark, no music) | Show the logo/name, the installation link (short form or QR) and the repo URL. Hold 5 s on the final frame. | VO18: Accord. Dependencies between teams, negotiated with data, approved by people, and monitored every day. Built on Forge, with Rovo and MCP. Install it from the link in the description. The source is on GitHub. | Overlay: install link and `github.com/Akar-Samudra-Artifisial/Accord`. Check that the link in the description is the same as in the README. |
+| 18 | 4:23–4:38 | Title card (dark, no music) | Show the logo/name, the installation link (short form or QR). Hold 5 s on the final frame. | VO18: Accord. Dependencies between teams, negotiated with data, approved by people, and monitored every day. Built on Forge, with Rovo and MCP. Install it from the link in the description. | Overlay: install link only (no repo URL). Check that the link in the description is the same as in the README. |
 
 ## 3. Voice-over, complete
 
@@ -100,9 +100,9 @@ Pace: short sentences. Overall about 118 words per minute, with 130–150 in the
 
 17. (32 words) The Network tab maps who depends on whom. Data stays in Forge SQL, with no calls outside Atlassian. UI and agent actions run with your permissions; background checks run as the app.
 
-**Segment H** (34 words)
+**Segment H** (29 words)
 
-18. (34 words) Accord. Dependencies between teams, negotiated with data, approved by people, and monitored every day. Built on Forge, with Rovo and MCP. Install it from the link in the description. The source is on GitHub.
+18. (29 words) Accord. Dependencies between teams, negotiated with data, approved by people, and monitored every day. Built on Forge, with Rovo and MCP. Install it from the link in the description.
 
 
 ## 4. Pre-recording checklist
