@@ -6,6 +6,8 @@ A deterministic planner computes delivery options from sprint throughput and com
 (Team Delegate and Broker) only explain and argue over those numbers. Both team leads approve a deal sheet
 before anything changes in Jira. Built on Atlassian Forge for Codegeist 2026.
 
+Demo video (4:15): https://www.youtube.com/watch?v=lsFtYI2pAAQ
+
 See `Accord — Product Requirements Document (Codegeist 2026).md` for the full product spec.
 
 ## Structure
@@ -176,5 +178,5 @@ only sees what they may see in Jira. There is no approve tool: deal sheets are a
 - [x] M6 — Renegotiation, escalation, request suggestions from Jira links, MCP tools, network map, clean demo data
 - [x] M7 — Production preparation (1.0.0): diagnostics and unused queue removed, demo mode switch, install guide
 - [x] Production deploy and installation link
-- [ ] Judge-path fixes from the fresh-site test (new contracts on track, at least two options); in development,
-      production deploy pending approval
+- [x] Judge-path fixes from the fresh-site test (new contracts on track, at least two options), live in production
+- [x] M8 — Demo video and Devpost submission
