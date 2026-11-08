@@ -1,6 +1,6 @@
 {
   "name": "accord",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Accord — negotiated cross-team dependency contracts for Jira, built on Atlassian Forge (Codegeist 2026).",
   "license": "MIT",

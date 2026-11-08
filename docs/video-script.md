@@ -1,7 +1,7 @@
 # Accord — Demo Video Script and Shot List (Codegeist 2026)
 
-Status: **draft for approval, do not record yet.**
-Language: English. Target length: **4:38** (hard limit from the rules: under 5:00; judges are not required to watch past 3:00, so the core demo is finished by 3:15).
+Status: **final (recorded, published at https://www.youtube.com/watch?v=lsFtYI2pAAQ).**
+Language: English. Final cut: **4:15** (255 s; the plan below targeted 4:38; hard limit from the rules: under 5:00; judges are not required to watch past 3:00, so the core demo is finished by 3:15).
 Recording site: `https://one-atlas-vyyd.atlassian.net` (dev 5.45.0, same code as production 2.3.0). Projects ACMOB (Mobile) and ACPAY (Payments), Confluence space ACCORD.
 Category: Apps for Software Teams. Bonus: Best Agents - Rovo/Assignable agents, Best app with Atlassian MCP.
 
@@ -19,7 +19,7 @@ Rules reminder (from `docs/codegeist2026-info.md` §5, official page): public Yo
 | F | Rovo agents and MCP | 3:15–4:00 | 0:45 | 87 (116 wpm) |
 | G | Trust, security, audit | 4:00–4:23 | 0:23 | 53 (138 wpm) |
 | H | Close and call to action | 4:23–4:38 | 0:15 | 29 (116 wpm) |
-| | **Total** | **4:38** | | **544** |
+| | **Total** | **4:38** planned (final cut: **4:15**) | | **544** |
 
 Buffer: 22 seconds under the 5:00 limit. About 20 seconds of real waiting (negotiation ~10–15 s, renegotiation ~9–15 s, Rovo replies) is cut with jump cuts, so the voice-over pace is a little above the on-screen action and averages 118 words per minute.
 

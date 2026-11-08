@@ -2,9 +2,15 @@
 
 All notable changes are recorded here. The format follows Keep a Changelog; versions follow SemVer.
 
+Note: Forge app versions (for example production 2.8.0) are assigned automatically by `forge deploy` and differ from
+the changelog and `package.json` versions used here.
+
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-08
+
 ### Added
+- MIT `LICENSE` file.
 - App icon (two brackets for the two teams around a check for the agreement, transparent background, Atlassian blue, purple and green) in `assets/icon/` as SVG source with PNG exports. The manifest uses it for the issue panel, the global page, the Confluence byline item and both Rovo agents, and the app now has a short description.
 
 ### Fixed
