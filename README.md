@@ -1,52 +1,129 @@
 # Accord
 
-Accord turns cross-team dependency requests in Jira into negotiated, monitored contracts.
-Each team writes a charter in Confluence (priorities, red lines, shiftable work, maximum share for other teams).
-A deterministic planner computes delivery options from sprint throughput and commitments; Rovo agents
-(Team Delegate and Broker) only explain and argue over those numbers. Both team leads approve a deal sheet
-before anything changes in Jira. Built on Atlassian Forge for Codegeist 2026.
+**Agents negotiate, people decide.** Accord turns cross-team dependency requests in Jira into negotiated,
+monitored contracts, using real sprint capacity and team charters from Confluence.
 
-Demo video (4:15): https://www.youtube.com/watch?v=lsFtYI2pAAQ
+![Forge](https://img.shields.io/badge/Atlassian-Forge-0052CC)
+![Jira | Confluence | Rovo](https://img.shields.io/badge/Jira%20%7C%20Confluence%20%7C%20Rovo-integrated-2684FF)
+![Runs on Atlassian](https://img.shields.io/badge/Runs%20on%20Atlassian-no%20egress-36B37E)
+![Version](https://img.shields.io/badge/production-2.8.0-6554C0)
+![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
-See `Accord — Product Requirements Document (Codegeist 2026).md` for the full product spec.
+- **Demo video (4:15):** https://www.youtube.com/watch?v=lsFtYI2pAAQ
+- **Install:** see [Install (judges)](#install-judges) (installation link, not on the Marketplace)
+- **Codegeist 2026:** category _Apps for Software Teams_; bonus _Best Agents - Rovo/Assignable agents_
+- **More:** [Changelog](CHANGELOG.md) · [Privacy](PRIVACY.md)
 
-## Structure
+![A request from Mobile to Payments comes back as a deal sheet with a recommended option and its trade-off, waiting for both team leads](docs/images/01-deal-sheet.png)
 
-```
-manifest.yml            Forge modules: issue panel, global page, Confluence byline, two queue consumers
-                        (`accord-negotiation`, `accord-monitor`), lifecycle and issue-link triggers, daily
-                        scheduled trigger, Forge SQL, two Rovo agents, seven Rovo actions, one rovo:mcp
-                        module (four tools)
-src/index.ts            Function handler exports
-src/planner/            Pure, deterministic planner (no @forge imports): capacity, cost, options, explain
-src/sql/migrations.ts   Forge SQL schema (append-only migrations)
-src/resolvers/          UI Kit resolvers
-src/frontend/           UI Kit entry points: panel.tsx, home.tsx, byline.tsx
-src/actions/            Rovo action handlers
-src/negotiation/        Negotiation rounds, deal sheet and contracts (`accord-negotiation` queue consumer)
-src/monitor/            Daily contract monitor (`accord-monitor` queue consumer)
-src/demo/               Demo scenario, seed data and step-by-step demo seed (MOB/PAY)
-src/jira/, src/confluence/  Jira Agile/REST and Confluence v2 clients; charter template/parser/validator
-src/capacity/           Pure throughput and commitment aggregation
-src/teams/              Team/charter/throughput repository (Forge SQL) and team service
-test/                   Vitest unit tests
-```
+_A request from Mobile to Payments comes back as a deal sheet with a recommended option and its trade-off, waiting
+for both team leads._
 
-## Development
+## The problem
 
-```bash
-nvm use 24            # Forge CLI requires Node 24 (see .nvmrc)
-npm install
-npm test              # planner unit tests
-npm run typecheck
-forge register        # only to deploy to your own account (creates a new app id)
-npm run lint          # forge lint
-forge deploy
-forge install         # pick a Jira + Confluence developer site
+"Can you build the refund API before our release?" is asked in a hallway, half-agreed in chat, and nobody checks
+whether the provider team actually has room. The provider's priorities, red lines and capacity never enter the
+conversation, so the dependency slips and both sides blame each other.
+
+Accord moves that negotiation into Jira and gives it context: real sprint throughput from Jira, written team rules
+from Confluence, a neutral broker that shows the consequences for both teams, and a binding contract that is
+monitored instead of forgotten.
+
+## How Accord works
+
+```mermaid
+flowchart LR
+    A[Request from a Jira issue] --> B[Two delegates negotiate<br/>2 rounds]
+    B --> C[Deal sheet<br/>≤ 4 planner options]
+    C --> D{Both leads approve}
+    D --> E[Contract in Jira<br/>deliverable + Blocks link + comment]
+    E --> F[Daily monitor]
+    F -->|On track| F
+    F -->|At risk| G[Automatic renegotiation]
+    G --> C
 ```
 
-`manifest.yml` contains Accord's app id. To deploy to your own Atlassian account, run `forge register` first; it
-creates a new app id for you.
+1. **Charter.** Each team writes a charter page in Confluence: priorities, red lines, shiftable work, maximum share
+   for other teams, response time and approvers. A Confluence byline item checks whether a page is a valid charter.
+2. **Request.** From a Jira issue (issue panel, or a Rovo agent) a team asks another team for work, with size (S/M/L),
+   needed-by date and cost of delay. Linking two issues of different Accord teams with "is blocked by" produces a
+   request suggestion.
+3. **Negotiate.** Two delegates (one per team) negotiate in two rounds through an async queue.
+4. **Deal sheet.** A deterministic planner computes at most four options from sprint throughput and commitments; the
+   first is recommended. "Why these numbers" shows where every number comes from.
+5. **Approve.** Both team leads approve the same option in the Accord UI. No agent, action or MCP tool can approve.
+6. **Contract.** Only then does Accord change Jira: a deliverable issue in the provider's sprint, a "Blocks" link to
+   the source issue, shifted work moved and a comment.
+7. **Monitor and renegotiate.** A daily scheduled trigger projects every contract at pessimistic throughput. When a
+   contract turns At risk, Accord opens a renegotiation and a new deal sheet appears in the Inbox; the approved deal
+   supersedes the old contract.
+
+## Features
+
+| Feature | What it does |
+| --- | --- |
+| Deterministic planner | Capacity from the last 6 sprints; options on time, on time with shifting, partial, later, reject. Language models never produce a number. |
+| Deal sheet + "Why these numbers" | Recommendation, alternatives and a trace of throughput, charter limits and planned work behind each date. |
+| Dual control | Both leads approve the same option before anything changes in Jira. |
+| Contracts | Deliverable in the provider project, "Blocks" link, comment, shifted work moved; status On track / At risk / Not enough data / Superseded. |
+| Daily monitor + renegotiation | Scheduled projection; At-risk contracts reopen automatically. |
+| Confluence charters | Template, parser, validator and byline check; only teams with a valid charter can receive requests. |
+| Global page tabs | Teams, Inbox, Contracts, Network (who depends on whom), Audit, Demo. |
+| Rovo agents + MCP | Accord Team Delegate, Accord Broker, seven Rovo actions, one `rovo:mcp` module with four tools. |
+| Per-viewer restriction | Users without browse permission on a team's project see it as "restricted" with aggregate capacity only; project keys are masked. |
+| Audit trail | Every proposal, approval, Jira change, monitor result and demo mode change, without raw account ids. |
+| Demo tooling | Seed and clean demo data (Mobile/Payments), "Make me the demo lead", admin-only audited demo mode. |
+
+### Gallery
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/02-why-these-numbers.png" alt="&quot;Why these numbers&quot; shows how sprint throughput, the team charter and the planned work behind each date add up"><br><b>Every date explained from real capacity.</b> "Why these numbers" shows how sprint throughput, the team charter and the planned work behind each date add up.</td>
+    <td width="50%"><img src="docs/images/03-contracts-on-track.png" alt="After both leads approve, Accord creates the linked deliverable and monitors the contract against its agreed date"><br><b>Two approvals turn it into a contract.</b> After both leads approve, Accord creates the linked deliverable and monitors the contract against its agreed date.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/04-reneg-deal-sheet.png" alt="When a critical bug pushes the projected date past the agreement, Accord opens a renegotiation with two fresh options"><br><b>At risk? Accord reopens the deal.</b> When a critical bug pushes the projected date past the agreement, Accord opens a renegotiation with two fresh options.</td>
+    <td><img src="docs/images/05-contracts-superseded.png" alt="The approved renegotiation replaces the old contract, which stays visible as Superseded for history"><br><b>The new deal supersedes the old one.</b> The approved renegotiation replaces the old contract, which stays visible as Superseded for history.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/06-rovo-broker.png" alt="The Accord Broker agent in Rovo lists your team's delivery commitments for the sprint with links to the Jira issues"><br><b>Ask Rovo what your team owes.</b> The Accord Broker agent in Rovo lists your team's delivery commitments for the sprint with links to the Jira issues.</td>
+    <td><img src="docs/images/07-teams.png" alt="Each team gets a capacity range from its sprint history, and only teams with a valid Confluence charter can receive requests"><br><b>Capacity from charters and sprint history.</b> Each team gets a capacity range from its sprint history, and only teams with a valid Confluence charter can receive requests.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/08-audit.png" alt="Every proposal, approval, Jira change and status change is recorded with who did it and when"><br><b>Every step lands in the audit trail.</b> Every proposal, approval, Jira change and status change is recorded with who did it and when.</td>
+    <td></td>
+  </tr>
+</table>
+
+Screenshots are from the live app on a Jira Cloud test site (demo projects ACMOB and ACPAY).
+
+## Rovo agents and MCP
+
+Language models are used only through Rovo. Agents call Accord actions that return planner numbers and
+display-ready fields; their prompts forbid estimating, rounding or approving.
+
+| Agent | Role | Example prompts |
+| --- | --- | --- |
+| **Accord Team Delegate** | Represents one team using only its charter and planner numbers | "What do we owe other teams this sprint?" · "Show the options for this dependency request" · "What does our charter allow us to shift?" |
+| **Accord Broker** | Neutral party that presents the deal sheet with one recommendation and alternatives | "Summarize the deal sheet for request X" · "Which contracts are at risk?" |
+
+**Rovo actions (7):** `list-teams`, `get-team-charter`, `get-team-capacity`, `get-request`, `evaluate-options`,
+`list-contracts`, `create-dependency-request` (two-step: `confirm=false` previews, `confirm=true` only after the user
+confirms).
+
+### Accord tools over MCP (`rovo:mcp`, Preview)
+
+The `accord-mcp` module exposes four existing actions as tools: `list-teams`, `get-request`, `list-contracts` and
+`create-dependency-request`. They use the same handlers as the Rovo agents and run as the invoking user, so a user
+only sees what they may see in Jira. There is no approve tool: deal sheets are approved only in the Accord UI.
+
+- Rovo Studio custom agent: Ask Rovo → agent selector → Create agent → skip to manual step → Tools → Add tools →
+  Connected apps → Accord → pick the tools → Add → Publish.
+- External MCP client (Claude, Cursor, …): a site or org admin first enables the tools in Atlassian Administration →
+  Apps → Sites → _your site_ → Connected apps → Accord → Tools (off by default, set per site). Then add
+  `https://mcp.atlassian.com/forge/b3ad0126-cc44-4b56-94d0-dc7e24ba391e` as a remote HTTP MCP server, for example
+  `claude mcp add --transport http accord https://mcp.atlassian.com/forge/b3ad0126-cc44-4b56-94d0-dc7e24ba391e`.
+  Connecting opens an OAuth consent screen where the user picks the site.
 
 ## Install (judges)
 
@@ -76,12 +153,61 @@ Accord is not listed on the Atlassian Marketplace; it is shared through an insta
    renegotiation (Inbox tab); approve the new deal sheet the same way, or use "Reset demo bugs" to move the bugs to
    the backlog and bring the contract back On track.
 9. Rovo: open Rovo chat and pick "Accord Team Delegate" or "Accord Broker" (for example "What do we owe other
-   teams this sprint?"). MCP: Rovo Studio → Create agent → Tools → Add tools → Connected apps → Accord (see below).
+   teams this sprint?"). MCP: Rovo Studio → Create agent → Tools → Add tools → Connected apps → Accord (see
+   [Accord tools over MCP](#accord-tools-over-mcp-rovomcp-preview)).
    Rovo agents and MCP need a site with Rovo; the rest works without it.
 10. Turn demo mode off again when you are done, or use "Clean demo data" to start over (the clean keeps demo mode as
     it is).
 
-## Privacy and security
+## Architecture
+
+All of Accord runs on Atlassian Forge (Runs on Atlassian, Node 24 runtime, UI Kit). There are no external services.
+
+| Forge module | Purpose |
+| --- | --- |
+| `jira:issuePanel` | Request form, inline deal sheet and approvals on a Jira issue |
+| `jira:globalPage` | Teams, Inbox, Contracts, Network, Audit and Demo tabs |
+| `confluence:contentBylineItem` | Charter validity check on Confluence pages |
+| `consumer` × 2 | Queues `accord-negotiation` (rounds, deal sheet, contracts) and `accord-monitor` |
+| `trigger` | App lifecycle (migrations) and `avi:jira:created:issuelink` (request suggestions) |
+| `scheduledTrigger` | Daily contract monitor |
+| `sql` | Forge SQL (MySQL): teams, charters, requests, deal sheets, contracts, audit trail, dependency edges |
+| `rovo:agent` × 2, `action` × 7, `rovo:mcp` × 1 | Rovo agents, reusable actions and four MCP tools |
+
+The planner is a pure TypeScript module with no `@forge` imports, unit-tested in isolation. Queue handlers are
+idempotent and all state lives in Forge SQL.
+
+```
+manifest.yml            Forge modules (see table above)
+src/index.ts            Function handler exports
+src/planner/            Pure, deterministic planner: capacity, cost, options, explain
+src/negotiation/        Negotiation rounds, deal sheet and contracts (`accord-negotiation` consumer)
+src/monitor/            Daily contract monitor (`accord-monitor` consumer)
+src/actions/            Rovo action handlers (shared with the MCP tools)
+src/resolvers/          UI Kit resolvers
+src/frontend/           UI Kit entry points: panel, home, byline, deal sheet
+src/jira/, src/confluence/  Jira Agile/REST and Confluence v2 clients; charter template/parser/validator
+src/capacity/           Pure throughput and commitment aggregation
+src/teams/              Team/charter/throughput repository (Forge SQL) and team service
+src/suggestions/        Request suggestions from "blocks" issue links
+src/demo/               Demo scenario, seed, clean, demo lead, demo mode, critical bugs
+src/sql/                Forge SQL access and append-only migrations
+test/                   Vitest unit and integration tests
+```
+
+### Planner rules (summary)
+
+- Capacity from the last 6 sprints: realistic = median, pessimistic = second lowest; fewer than 4 sprints is flagged as limited data.
+- Size S/M/L = 1/3/6 issues. Cost of delay weights: fixed-date 3, standard 2, intangible 1.
+- Per sprint, room for other teams = min(pessimistic − committed, floor(max share × pessimistic)).
+- No option is earlier than the contract monitor projects it: all open work of the active and next sprint plus the
+  provider's other open contracts come first, at pessimistic throughput. So a new contract starts On track. A shift
+  may move shiftable work of the active or next sprint out of that window to bring the date forward.
+- Options: on time, on time with shifting (cheapest shiftable work first, red lines never touched), partial, later, reject.
+- Sorted by meets-need, then shift cost, then latest date; at most 4; the first is recommended.
+- Every number in an explanation comes from the option's trace values.
+
+## Trust, privacy and security
 
 - All Accord data (teams, charters, requests, deal sheets, contracts, audit trail) is stored in the app's own Forge
   SQL database inside Atlassian's platform. Accord makes no calls to services outside Atlassian (no egress
@@ -91,24 +217,15 @@ Accord is not listed on the Atlassian Marketplace; it is shared through an insta
 - Dual control: both teams must approve the same option in the Accord UI before anything changes in Jira; no agent,
   action or MCP tool can approve. One person may approve for both teams only while an admin has turned on demo mode
   (off by default), and only for requests between Accord's own demo projects.
-- Identity always comes from the Forge invocation context; write actions check Jira permissions of the signed-in
-  user, and Rovo actions and MCP tools run as the invoking user.
+- Identity always comes from the Forge invocation context. UI resolvers, Rovo actions and MCP tools run as the
+  signed-in user (`asUser`), and write actions check that user's Jira permissions. Background work (queue consumers,
+  daily monitor) runs as the app (`asApp`).
+- Data restriction per viewer: a team whose Jira project the viewer cannot browse is shown as "restricted" with
+  aggregate capacity only, and its project keys are masked.
 - Every decision, Jira change, monitor result and demo mode change is written to the audit trail (Audit tab, without
   raw account ids).
 
-## Troubleshooting
-
-- "Seed demo data" is disabled: only a Jira site admin (or an admin of every target project) can seed.
-- A seed step failed: run "Seed demo data" again; it only adds what is missing.
-- "Dual control: you already approved for the other team": demo mode is off, or the request involves a team that is
-  not an Accord demo project; an admin can turn demo mode on in the Demo tab.
-- The deal sheet stays at "Negotiating": wait a minute and refresh; after 5 minutes the deal sheet offers
-  "Retry negotiation".
-- "You cannot approve for …": Accord applies the contract on your behalf, so you need the listed Jira permissions on
-  that project.
-- Contract shows "Not enough data": the provider team has no throughput history yet.
-- Accord agents or tools are missing in Rovo: Rovo must be enabled on the site; MCP tools for external clients must
-  be enabled by an admin under Connected apps.
+See [PRIVACY.md](PRIVACY.md) for the full privacy policy.
 
 ## Permissions (scopes)
 
@@ -132,55 +249,46 @@ The scope list is unchanged since the first installation, so updates never need 
 | `read:label:confluence`, `write:label:confluence` | The `accord-charter` label on charter pages |
 | `storage:app` | Forge app storage; kept so the scope list stays unchanged (Accord data lives in Forge SQL) |
 
-## Before production
+## Troubleshooting
 
-- [x] Removed the development diagnostics web trigger (`accord-dev-diag`, `src/diag/`) and the unused
-      `accord-demo-seed` queue (1.0.0).
-- [x] Replaced the environment variable for a single-account demo with the per-installation demo mode switch
-      (Demo tab, admins only, off by default, audited). No Forge variables are needed.
-- [x] Scopes unchanged, so existing installations need no upgrade.
-- [x] Deployed to production and created the installation link (see "Install (judges)").
+- "Seed demo data" is disabled: only a Jira site admin (or an admin of every target project) can seed.
+- A seed step failed: run "Seed demo data" again; it only adds what is missing.
+- "Dual control: you already approved for the other team": demo mode is off, or the request involves a team that is
+  not an Accord demo project; an admin can turn demo mode on in the Demo tab.
+- The deal sheet stays at "Negotiating": wait a minute and refresh; after 5 minutes the deal sheet offers
+  "Retry negotiation".
+- "You cannot approve for …": Accord applies the contract on your behalf, so you need the listed Jira permissions on
+  that project.
+- Contract shows "Not enough data": the provider team has no throughput history yet.
+- Accord agents or tools are missing in Rovo: Rovo must be enabled on the site; MCP tools for external clients must
+  be enabled by an admin under Connected apps.
 
-## Accord tools over MCP (`rovo:mcp`, Preview)
+## Development
 
-The `accord-mcp` module exposes four existing actions as tools: `list-teams`, `get-request`, `list-contracts` and
-`create-dependency-request`. They use the same handlers as the Rovo agents and run as the invoking user, so a user
-only sees what they may see in Jira. There is no approve tool: deal sheets are approved only in the Accord UI.
+```bash
+nvm use 24            # Forge CLI requires Node 24 (see .nvmrc)
+npm install
+npm test              # Vitest unit and integration tests
+npm run typecheck
+forge register        # only to deploy to your own account (creates a new app id)
+npm run lint          # forge lint
+forge deploy
+forge install         # pick a Jira + Confluence developer site
+```
 
-- Rovo Studio custom agent: Ask Rovo → agent selector → Create agent → skip to manual step → Tools → Add tools →
-  Connected apps → Accord → pick the tools → Add → Publish.
-- External MCP client (Claude, Cursor, …): a site or org admin first enables the tools in Atlassian Administration →
-  Apps → Sites → _your site_ → Connected apps → Accord → Tools (off by default, set per site). Then add
-  `https://mcp.atlassian.com/forge/b3ad0126-cc44-4b56-94d0-dc7e24ba391e` as a remote HTTP MCP server, for example
-  `claude mcp add --transport http accord https://mcp.atlassian.com/forge/b3ad0126-cc44-4b56-94d0-dc7e24ba391e`.
-  Connecting opens an OAuth consent screen where the user picks the site.
+`manifest.yml` contains Accord's app id. To deploy to your own Atlassian account, run `forge register` first; it
+creates a new app id for you. No Forge variables are needed.
 
-## Planner rules (summary)
+## Limitations and roadmap
 
-- Capacity from the last 6 sprints: realistic = median, pessimistic = second lowest; fewer than 4 sprints is flagged as limited data.
-- Size S/M/L = 1/3/6 issues. Cost of delay weights: fixed-date 3, standard 2, intangible 1.
-- Per sprint, room for other teams = min(pessimistic − committed, floor(max share × pessimistic)).
-- No option is earlier than the contract monitor projects it: all open work of the active and next sprint plus the
-  provider's other open contracts come first, at pessimistic throughput. So a new contract starts On track. A shift
-  may move shiftable work of the active or next sprint out of that window to bring the date forward.
-- Options: on time, on time with shifting (cheapest shiftable work first, red lines never touched), partial, later, reject.
-- Sorted by meets-need, then shift cost, then latest date; at most 4; the first is recommended.
-- Every number in an explanation comes from the option's trace values.
+- **Teamwork Graph (FR-13) is not done yet.** Dependency edges are stored only in a Forge SQL fallback table
+  (`dependency_edges`); Accord does not read from or write to the Teamwork Graph yet.
+- **Analytics (FR-19)** and **negotiations with more than two teams (FR-20)** are not implemented.
+- Not listed on the Atlassian Marketplace; no security review yet.
+- Next: publish contracts to the Teamwork Graph, more planner inputs (release dates, multi-team chains), richer
+  charters and approver notifications in Jira and Confluence.
 
-## Milestones
-
-- [x] M0 — Scaffolding, deployed to `development`; spikes in `docs/spikes.md`
-- [x] M1 — Deterministic planner with unit tests
-- [x] M2 — Jira/Confluence clients, charters (template, parser, validator, byline), capacity and commitments,
-      demo seed, Teams and Demo tabs
-- [x] M3 — Requests, two-round negotiation, deal sheet, approvals and contracts in Jira
-- [x] M4 — Contract monitor, Rovo actions with real data, demo polish
-- [x] M5 — User permission checks and English copy
-- [x] M6 — Renegotiation, escalation, request suggestions from Jira links, MCP tools, network map, clean demo data
-- [x] M7 — Production preparation (1.0.0): diagnostics and unused queue removed, demo mode switch, install guide
-- [x] Production deploy and installation link
-- [x] Judge-path fixes from the fresh-site test (new contracts on track, at least two options), live in production
-- [x] M8 — Demo video and Devpost submission
+Release history: [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

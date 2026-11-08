@@ -6,3 +6,6 @@ coverage/
 .env
 .env.*
 .DS_Store
+
+# Internal planning docs (kept local)
+Accord — Product Requirements Document*.md
