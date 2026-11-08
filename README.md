@@ -32,7 +32,7 @@ monitored instead of forgotten.
 ## How Accord works
 
 ```mermaid
-flowchart LR
+flowchart TD
     A[Request from a Jira issue] --> B[Two delegates negotiate<br/>2 rounds]
     B --> C[Deal sheet<br/>≤ 4 planner options]
     C --> D{Both leads approve}
@@ -78,20 +78,19 @@ flowchart LR
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/02-why-these-numbers.png" alt="&quot;Why these numbers&quot; shows how sprint throughput, the team charter and the planned work behind each date add up"><br><b>Every date explained from real capacity.</b> "Why these numbers" shows how sprint throughput, the team charter and the planned work behind each date add up.</td>
-    <td width="50%"><img src="docs/images/03-contracts-on-track.png" alt="After both leads approve, Accord creates the linked deliverable and monitors the contract against its agreed date"><br><b>Two approvals turn it into a contract.</b> After both leads approve, Accord creates the linked deliverable and monitors the contract against its agreed date.</td>
+    <td width="50%" valign="top"><img src="docs/images/02-why-these-numbers.png" alt="&quot;Why these numbers&quot; shows how sprint throughput, the team charter and the planned work behind each date add up"><br><b>Every date explained from real capacity.</b> "Why these numbers" shows how sprint throughput, the team charter and the planned work behind each date add up.</td>
+    <td width="50%" valign="top"><img src="docs/images/03-contracts-on-track.png" alt="After both leads approve, Accord creates the linked deliverable and monitors the contract against its agreed date"><br><b>Two approvals turn it into a contract.</b> After both leads approve, Accord creates the linked deliverable and monitors the contract against its agreed date.</td>
   </tr>
   <tr>
-    <td><img src="docs/images/04-reneg-deal-sheet.png" alt="When a critical bug pushes the projected date past the agreement, Accord opens a renegotiation with two fresh options"><br><b>At risk? Accord reopens the deal.</b> When a critical bug pushes the projected date past the agreement, Accord opens a renegotiation with two fresh options.</td>
-    <td><img src="docs/images/05-contracts-superseded.png" alt="The approved renegotiation replaces the old contract, which stays visible as Superseded for history"><br><b>The new deal supersedes the old one.</b> The approved renegotiation replaces the old contract, which stays visible as Superseded for history.</td>
+    <td valign="top"><img src="docs/images/04-reneg-deal-sheet.png" alt="When a critical bug pushes the projected date past the agreement, Accord opens a renegotiation with two fresh options"><br><b>At risk? Accord reopens the deal.</b> When a critical bug pushes the projected date past the agreement, Accord opens a renegotiation with two fresh options.</td>
+    <td valign="top"><img src="docs/images/05-contracts-superseded.png" alt="The approved renegotiation replaces the old contract, which stays visible as Superseded for history"><br><b>The new deal supersedes the old one.</b> The approved renegotiation replaces the old contract, which stays visible as Superseded for history.</td>
   </tr>
   <tr>
-    <td><img src="docs/images/06-rovo-broker.png" alt="The Accord Broker agent in Rovo lists your team's delivery commitments for the sprint with links to the Jira issues"><br><b>Ask Rovo what your team owes.</b> The Accord Broker agent in Rovo lists your team's delivery commitments for the sprint with links to the Jira issues.</td>
-    <td><img src="docs/images/07-teams.png" alt="Each team gets a capacity range from its sprint history, and only teams with a valid Confluence charter can receive requests"><br><b>Capacity from charters and sprint history.</b> Each team gets a capacity range from its sprint history, and only teams with a valid Confluence charter can receive requests.</td>
+    <td valign="top"><img src="docs/images/06-rovo-broker.png" alt="The Accord Broker agent in Rovo lists your team's delivery commitments for the sprint with links to the Jira issues"><br><b>Ask Rovo what your team owes.</b> The Accord Broker agent in Rovo lists your team's delivery commitments for the sprint with links to the Jira issues.</td>
+    <td valign="top"><img src="docs/images/07-teams.png" alt="Each team gets a capacity range from its sprint history, and only teams with a valid Confluence charter can receive requests"><br><b>Capacity from charters and sprint history.</b> Each team gets a capacity range from its sprint history, and only teams with a valid Confluence charter can receive requests.</td>
   </tr>
   <tr>
-    <td><img src="docs/images/08-audit.png" alt="Every proposal, approval, Jira change and status change is recorded with who did it and when"><br><b>Every step lands in the audit trail.</b> Every proposal, approval, Jira change and status change is recorded with who did it and when.</td>
-    <td></td>
+    <td colspan="2" align="center" valign="top"><img src="docs/images/08-audit.png" width="50%" alt="Every proposal, approval, Jira change and status change is recorded with who did it and when"><br><b>Every step lands in the audit trail.</b> Every proposal, approval, Jira change and status change is recorded with who did it and when.</td>
   </tr>
 </table>
 
